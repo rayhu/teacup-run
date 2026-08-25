@@ -1,0 +1,49 @@
+# OpenGraft package manifest.
+#
+# Everything this agent reads at runtime — this file, prompts/, skills/ — lives
+# inside the shipped package, so it survives installation. evals/ and tests/ sit
+# outside it and need not ship.
+
+name: opengraft/note-taker
+version: 0.1.0
+description: Turns raw meeting notes into owned, dated action items.
+
+# The runtime is OpenGraft's own loop. The field exists so a package can declare
+# a different one later without changing the format.
+framework: opengraft
+
+model:
+  primary: gpt-5-mini
+  fallback: gpt-5
+
+instructions: prompts/system.md
+
+tools:
+  - save_action_item
+  - list_action_items
+
+skills: []
+
+# The loop's exit condition, beyond "the model stopped calling tools". Checks are
+# deterministic predicates over what the run produced — see checks.py.
+goal:
+  description: Every action item is recorded with an owner, and the answer lists them.
+  checks:
+    - non_empty
+    - no_question_back
+    - has_action_items
+    - every_item_has_owner
+    - items_appear_in_answer
+  max_attempts: 3
+
+budget:
+  default_usd: 0.25
+  max_tool_calls: 20
+  max_wall_clock_s: 120
+
+environment:
+  required:
+    - OPENAI_API_KEY
+
+lineage:
+  derived_from: null

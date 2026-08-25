@@ -1,0 +1,32 @@
+# A tiny benchmark. Every task is answerable from the notes in the question
+# itself, so the suite needs no corpus, no network, and no key when the model is
+# faked.
+
+name: note-taker
+description: Three sets of raw notes, each with commitments to extract.
+
+scoring:
+  # Quality is keyword coverage plus credit for meeting the agent's own goal.
+  keyword_weight: 0.7
+  goal_weight: 0.3
+  success_threshold: 0.5
+
+tasks:
+  - id: two-owners
+    question: |
+      Notes: Ray said he'll ship the pricing page by Friday. Mei pushed back on
+      the discount tiers and will send revised numbers Wednesday. We agreed to
+      revisit naming later.
+    rubric_keywords: [ray, pricing, mei, wednesday, naming]
+
+  - id: unowned-decision
+    question: |
+      Notes: We decided to drop the legacy importer. Nobody volunteered to do
+      the migration doc. Sam will announce the deprecation next Monday.
+    rubric_keywords: [sam, deprecation, monday, migration]
+
+  - id: no-commitments
+    question: |
+      Notes: Long discussion about whether the onboarding flow feels slow. No
+      decisions, no owners, agreed to look at the funnel data first.
+    rubric_keywords: [no action items, funnel]

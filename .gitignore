@@ -1,0 +1,42 @@
+# Secrets — never commit a key
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test and type-checker caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# OpenGraft
+# The local hub is a cache of pulled agents, not source.
+.opengraft/
