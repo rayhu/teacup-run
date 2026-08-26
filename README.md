@@ -132,6 +132,17 @@ agent.extend_instructions(
 
 ### 3. Run
 
+Executing an agent must not require writing Python.
+
+```bash
+opengraft run <ref> "<task>"
+```
+
+`<ref>` is the same reference `from_pretrained` takes: a local path, a name in
+the hub, or a git URL. The design is in [docs/execution.md](docs/execution.md).
+
+From Python, the same run:
+
 ```python
 result = agent.run(
     "Analyze Acme Corp and identify its three largest strategic risks."
@@ -190,12 +201,12 @@ An agent may contain:
 
 ```text
 agent/
-├── agent.yaml          # manifest: identity, model, tools, skills, budget, lineage
 ├── AGENT.md            # agent card: what it does, when to use it, eval numbers
 ├── README.md           # quickstart
 ├── pyproject.toml      # or package.json — dependencies, version, entry point
 │
 ├── <package>/          # the shipped artifact: what the agent needs at runtime
+│   ├── agent.yaml      # manifest: identity, model, tools, skills, budget, lineage
 │   ├── prompts/
 │   ├── skills/<skill>/SKILL.md
 │   └── tools/
@@ -205,9 +216,14 @@ agent/
 ```
 
 One rule makes this layout work: **everything the agent reads at runtime — the
-manifest included — must survive installation.** An agent whose prompts and
-skills only exist in a Git checkout can be cloned, but it cannot be installed and
-reused, which is the whole point.
+manifest included — must survive installation.** That is why `agent.yaml` sits
+inside `<package>/` rather than beside it: a manifest at the project root is not
+in the wheel. An agent whose prompts and skills only exist in a Git checkout can
+be cloned, but it cannot be installed and reused, which is the whole point.
+
+Loading an agent does not require knowing where the package sits — point
+`from_pretrained` at the project directory and it descends one level to the
+single package it finds.
 
 Conceptually, an agent can define:
 
@@ -501,28 +517,41 @@ Then someone else starts from there.
 
 **Don't build every agent from scratch. Build on each other.**
 
-## Samples
+## Examples
 
-Experimental agent packages live in [`samples/`](samples/).
+Agent packages live in [`examples/`](examples/).
 
-| Sample | Framework | What it shows |
+| Example | Framework | What it shows |
 |---|---|---|
-| [`oai-deep-research`](samples/oai-deep-research/) | OpenAI Agents SDK | Reference implementation of the package format: manifest, prompts, framework-free tools, a composable skill, a budgeted eval suite, and tests — pip-installable, importable, and loadable by name via an entry point. Runs offline with no API key. |
-| [`gadk-small-claims-advisor`](samples/gadk-small-claims-advisor/) | Google ADK | An early sketch — known incomplete: `agent.py` does not currently parse, and it is not packaged in this format. |
+| [`note-taker`](examples/note-taker/) | OpenGraft | The reference implementation of the package format: a manifest, prompts, a composable skill, `@tool` functions, `@check` predicates that decide when the work is done, and a budgeted eval suite. |
 
-Start with `oai-deep-research`:
+[`examples/note-taker`](examples/note-taker/) is the package the quickstart above
+loads. Its layout is the format:
 
-```bash
-cd samples/oai-deep-research
-uv venv && uv pip install -e ".[dev]"
-OpenGraft-deep-research "What is a surfski and how is it different from a sea kayak?"
+```text
+AGENT.md                              # agent card
+README.md                             # quickstart
+note_taker/                           # the shipped package — everything read at runtime
+├── agent.yaml                        # manifest
+├── prompts/system.md                 # instructions
+├── skills/concise-style/SKILL.md     # an optional capability
+├── tools.py                          # @tool functions
+└── checks.py                         # @check predicates
+evals/benchmark.yaml                  # development scaffolding, need not ship
 ```
 
-That runs the full loop — search, fetch, note, synthesize — against a bundled
-corpus with no key and no spend, and prints the cost ledger described above.
+`from_pretrained` accepts either the project directory or the package inside it:
+given a directory with no `agent.yaml` of its own, it looks one level down and
+uses the single package it finds. So the manifest has exactly one home — inside
+the package, where installation will carry it — and nothing at the project root
+has to mirror it.
 
-Two samples on two different frameworks is the point: the package format is
-supposed to sit above them, not replace them.
+The library's own test suite exercises this agent with a simulated model, so the
+whole thing is developable without an API key and without spending anything.
+
+A second example on a different framework is the obvious next one to write —
+demonstrating that the package format sits above frameworks rather than
+replacing them is the point of the format, and one example cannot show it.
 
 ## Status
 

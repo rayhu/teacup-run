@@ -79,6 +79,17 @@ agent.extend_instructions(
 
 ### 3. Run
 
+执行一个 agent 不应该需要写 Python。
+
+```bash
+opengraft run <ref> "<task>"
+```
+
+`<ref>` 就是 `from_pretrained` 接受的那种引用：本地路径、hub 中的名字，或一个
+git URL。具体设计见 [docs/execution.zh-CN.md](docs/execution.zh-CN.md)。
+
+同一次运行，从 Python 调用：
+
 ```python
 result = agent.run(
     "分析 Acme Corp，并找出其三个最大的战略风险。"
@@ -137,12 +148,12 @@ OpenGraft 中的 Agent 不是简单的一段 system prompt。
 
 ```text
 agent/
-├── agent.yaml          # manifest：身份、模型、tools、skills、budget、lineage
 ├── AGENT.md            # agent card：做什么、何时使用、评测数据
 ├── README.md           # 快速上手
 ├── pyproject.toml      # 或 package.json —— 依赖、版本、entry point
 │
 ├── <package>/          # 实际分发的产物：agent 运行时需要的一切
+│   ├── agent.yaml      # manifest：身份、模型、tools、skills、budget、lineage
 │   ├── prompts/
 │   ├── skills/<skill>/SKILL.md
 │   └── tools/
@@ -152,8 +163,13 @@ agent/
 ```
 
 有一条规则让这个布局真正成立：**agent 在运行时读取的一切（包括 manifest）都必须
-在安装后依然存在。**如果 prompts 和 skills 只存在于 Git 检出目录中，那么这个 agent
-只能被 clone，却无法被安装和复用 —— 而复用正是这一切的意义所在。
+在安装后依然存在。**`agent.yaml` 之所以放在 `<package>/` 内部而不是与之并列，原因
+就在这里：放在项目根目录的 manifest 不会进入 wheel。如果 prompts 和 skills 只存在于
+Git 检出目录中，那么这个 agent 只能被 clone，却无法被安装和复用 —— 而复用正是这一切
+的意义所在。
+
+加载 agent 并不需要知道 package 在哪一层：把 `from_pretrained` 指向项目目录即可，
+它会向下一层找到其中唯一的 package。
 
 从概念上，一个 Agent 可以定义：
 
@@ -473,26 +489,37 @@ agent.push_to_hub("my-better-agent")
 
 ## 示例
 
-实验性的 agent package 都放在 [`samples/`](samples/) 目录下。
+Agent package 放在 [`examples/`](examples/) 目录下。
 
 | 示例 | Framework | 展示了什么 |
 |---|---|---|
-| [`oai-deep-research`](samples/oai-deep-research/) | OpenAI Agents SDK | package format 的参考实现：manifest、prompts、与框架解耦的 tools、可组合的 skill、带预算的 eval 套件和测试 —— 可 pip 安装、可 import、可通过 entry point 按名字加载。无需 API key 即可离线运行。 |
-| [`gadk-small-claims-advisor`](samples/gadk-small-claims-advisor/) | Google ADK | 早期草稿，已知不完整：`agent.py` 目前无法解析，也尚未按该格式打包。 |
+| [`note-taker`](examples/note-taker/) | OpenGraft | package format 的参考实现：manifest、prompts、可组合的 skill、`@tool` 函数、决定「什么算做完」的 `@check` 断言，以及一套带预算的 eval。 |
 
-建议从 `oai-deep-research` 开始：
+[`examples/note-taker`](examples/note-taker/) 就是上面 quickstart 加载的那个
+package。它的目录结构即是这套格式本身：
 
-```bash
-cd samples/oai-deep-research
-uv venv && uv pip install -e ".[dev]"
-OpenGraft-deep-research "What is a surfski and how is it different from a sea kayak?"
+```text
+AGENT.md                              # agent card
+README.md                             # quickstart
+note_taker/                           # 实际发布的 package —— 运行时读到的一切都在这里
+├── agent.yaml                        # manifest
+├── prompts/system.md                 # instructions
+├── skills/concise-style/SKILL.md     # 一个可选能力
+├── tools.py                          # @tool 函数
+└── checks.py                         # @check 断言
+evals/benchmark.yaml                  # 开发脚手架，无需随包发布
 ```
 
-它会基于内置语料完整跑一遍 search → fetch → note → synthesize 流程，不需要 key、
-不产生任何花费，并打印上文描述的 cost ledger。
+`from_pretrained` 接受项目目录，也接受里面的 package 目录：当一个目录自身没有
+`agent.yaml` 时，它会向下找一层，取其中唯一的 package。于是 manifest 只有一个
+落脚点 —— 在 package 内部，安装时会被一并带走 —— 项目根目录不需要任何东西去
+镜像它。
 
-两个示例分别基于两个不同的 framework，这正是重点：package format 应该位于它们
-之上，而不是取代它们。
+本库自己的测试套件用一个模拟的 model 驱动这个 agent，所以整个开发过程不需要
+API key，也不产生任何花费。
+
+下一个显然该写的，是一个基于**另一个 framework** 的示例 —— package format 位于
+各 framework 之上而非取代它们，这正是这套格式的意义所在，而一个示例说明不了这件事。
 
 ## 项目状态
 
