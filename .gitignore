@@ -30,7 +30,7 @@ htmlcov/
 .nox/
 
 # Editors
-.claude/
+.claude/worktrees/
 .idea/
 .vscode/
 *.swp
