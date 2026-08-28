@@ -1,8 +1,8 @@
 # OpenGraft package manifest.
 #
-# Everything this agent reads at runtime — this file, prompts/, skills/ — lives
-# inside the shipped package, so it survives installation. evals/ and tests/ sit
-# outside it and need not ship.
+# This directory is the agent: everything below — this file, prompts/, skills/,
+# tools.py, checks.py, evals/ — is what publishing copies and pulling gets back.
+# There is no separate "shipped" subset, so nothing can be left behind.
 
 name: opengraft/note-taker
 version: 0.1.0

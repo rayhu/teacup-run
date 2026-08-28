@@ -75,5 +75,5 @@ def git_hub(tmp_path: Path) -> Path:
 def agent_copy(tmp_path: Path, note_taker_path: Path) -> Path:
     """A writable copy of the example agent, for tests that publish it."""
     target = tmp_path / "note-taker"
-    shutil.copytree(note_taker_path, target, symlinks=True)
+    shutil.copytree(note_taker_path, target)
     return target

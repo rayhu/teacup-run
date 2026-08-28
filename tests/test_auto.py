@@ -23,11 +23,44 @@ def test_from_pretrained_loads_a_local_package(note_taker_path):
     assert "non_empty" in agent.checks
 
 
-def test_the_root_symlink_and_the_package_dir_resolve_to_the_same_agent(note_taker_path):
-    outer = AutoAgent.from_pretrained(str(note_taker_path))
-    inner = AutoAgent.from_pretrained(str(note_taker_path / "note_taker"))
+def test_publishing_reproduces_the_agent_directory(note_taker_path, git_hub):
+    """The agent directory *is* the distributed artifact — one layout, not two.
 
-    assert outer.spec.root == inner.spec.root
+    An agent whose published shape differs from its source shape needs glue to
+    reconcile them, and that glue is where "works in my checkout, breaks after
+    pull" lives. Flat means there is nothing to reconcile.
+    """
+    target = AutoAgent.from_pretrained(str(note_taker_path)).push_to_hub("ray/n", hub=git_hub)
+
+    def shape(root):
+        return sorted(
+            p.relative_to(root).as_posix()
+            for p in root.rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts
+        )
+
+    assert shape(target) == shape(note_taker_path)
+
+
+def test_publishing_leaves_dev_residue_and_secrets_behind(agent_copy, git_hub):
+    """The one thing the shape check above cannot see.
+
+    It compares source to target, so anything copied to *both* sides matches.
+    An agent directory is often a repository root, and a published `.git` gives
+    the hub an embedded clone its own `git add` cannot represent.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=agent_copy, check=True)
+    (agent_copy / ".env").write_text("OPENAI_API_KEY=sk-real-secret\n")
+    (agent_copy / ".venv" / "lib").mkdir(parents=True)
+    (agent_copy / ".venv" / "lib" / "big.bin").write_text("x")
+
+    target = AutoAgent.from_pretrained(str(agent_copy)).push_to_hub("ray/clean", hub=git_hub)
+
+    assert not (target / ".git").exists()
+    assert not (target / ".env").exists()
+    assert not (target / ".venv").exists()
+    assert (target / "agent.yaml").is_file()      # the agent itself still travelled
+    assert (target / "evals" / "benchmark.yaml").is_file()
 
 
 def test_add_skill_appends_the_skill_body(note_taker_path):
@@ -166,15 +199,15 @@ def test_a_published_manifest_is_still_valid_yaml(agent_copy, git_hub):
 def _tasks(agent):
     import yaml as _yaml
 
-    path = agent.spec.root.parent / "evals" / "benchmark.yaml"
+    path = agent.spec.root / "evals" / "benchmark.yaml"
     return _yaml.safe_load(path.read_text())["tasks"]
 
 
 def test_a_pulled_agent_can_still_be_evaluated(agent_copy, git_hub):
     """`from_pretrained` -> `eval` is the flow the README sells; publishing must not break it.
 
-    `evals/` sits beside the package rather than inside it, so publishing has to
-    carry it across or a pulled agent has no benchmark to run.
+    `evals/` lives in the agent directory, so publishing carries it for free —
+    which is what lets a fork be measured against the upstream it came from.
     """
     AutoAgent.from_pretrained(str(agent_copy)).push_to_hub("ray/evaluable", hub=git_hub)
     pulled = AutoAgent.from_pretrained("ray/evaluable", hub=git_hub)

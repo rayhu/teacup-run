@@ -20,6 +20,25 @@ __all__ = ["RegistryError", "clone", "hub_path", "publish", "resolve"]
 
 MANIFEST_NAME = "agent.yaml"
 
+# The agent directory is the artifact, so publishing copies all of it — except
+# these. Secrets must never travel; the rest is local dev residue, and since an
+# agent directory is often a repository root, `.git` in particular would land the
+# hub with an embedded clone that its own `git add` cannot represent.
+NOT_PUBLISHED = (
+    ".env",
+    ".git",
+    ".venv",
+    "__pycache__",
+    "*.pyc",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "*.egg-info",
+    "node_modules",
+    "dist",
+    "build",
+)
+
 
 class RegistryError(RuntimeError):
     """A reference could not be resolved, or a package could not be published."""
@@ -35,10 +54,11 @@ def _is_git_url(ref: str) -> bool:
 
 
 def _package_root(path: Path) -> Path:
-    """The directory the manifest actually lives in.
+    """The directory the manifest lives in — that directory is the agent.
 
-    A project may keep `agent.yaml` at its root as a symlink into the shipped
-    package; following it means prompts and skills resolve from one place.
+    Usually `path` itself. The fallback is for pointing at a repository that
+    keeps its agent in a subdirectory: one `agent.yaml` one level down is
+    unambiguous, several are not.
     """
     manifest = path / MANIFEST_NAME
     if manifest.is_file():
@@ -98,7 +118,7 @@ def publish(source: Path, ref: str, *, hub: Path | None = None, message: str | N
     if target.exists():
         shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".env"))
+    shutil.copytree(source, target, ignore=shutil.ignore_patterns(*NOT_PUBLISHED))
 
     if (hub / ".git").is_dir() or _git(["rev-parse", "--git-dir"], cwd=hub, tolerate_failure=True):
         _git(["add", "-A", str(target)], cwd=hub, tolerate_failure=True)

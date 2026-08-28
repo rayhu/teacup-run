@@ -148,28 +148,34 @@ OpenGraft 中的 Agent 不是简单的一段 system prompt。
 
 ```text
 agent/
+├── agent.yaml          # manifest：身份、模型、tools、skills、budget、lineage
 ├── AGENT.md            # agent card：做什么、何时使用、评测数据
 ├── README.md           # 快速上手
-├── pyproject.toml      # 或 package.json —— 依赖、版本、entry point
-│
-├── <package>/          # 实际分发的产物：agent 运行时需要的一切
-│   ├── agent.yaml      # manifest：身份、模型、tools、skills、budget、lineage
-│   ├── prompts/
-│   ├── skills/<skill>/SKILL.md
-│   └── tools/
-│
-├── evals/              # 开发期脚手架 —— 不必随包分发
+├── prompts/
+├── skills/<skill>/SKILL.md
+├── tools.py            # 一个文件不够时也可以是 tools/
+├── checks.py           # 「什么算做完」
+├── evals/              # benchmark —— fork 才有办法和上游比
 └── tests/
 ```
 
-有一条规则让这个布局真正成立：**agent 在运行时读取的一切（包括 manifest）都必须
-在安装后依然存在。**`agent.yaml` 之所以放在 `<package>/` 内部而不是与之并列，原因
-就在这里：放在项目根目录的 manifest 不会进入 wheel。如果 prompts 和 skills 只存在于
-Git 检出目录中，那么这个 agent 只能被 clone，却无法被安装和复用 —— 而复用正是这一切
-的意义所在。
+有一条规则让这个布局真正成立：**agent 目录本身就是被分发的产物。**发布即拷贝这个
+目录，pull 拿回来的就是这份拷贝。它内部不存在另一个更窄的、才算「真正的 package」
+的东西，因此没有任何需要对齐的地方 —— 你编辑的就是别人收到的，prompts、skills、
+benchmark 一并在内。只有两类东西留在原地，且是靠一份显式清单而不是靠它们所在的位置
+排除的：密钥（`.env`），以及本地开发残留（`.git`、`.venv`、各种缓存、`node_modules`、
+构建产物）。
 
-加载 agent 并不需要知道 package 在哪一层：把 `from_pretrained` 指向项目目录即可，
-它会向下一层找到其中唯一的 package。
+这条规则值得写出来，是因为那个看起来更自然的替代方案会静默地失败。把运行时文件嵌套
+进一个内层 package，发布后的形状就不再等于源码的形状；于是你需要一段胶水代码把
+benchmark 和 agent card 搬过去，而胶水漏掉的东西，只有下游的人才会发现缺失。
+
+代价是：格式在 agent 根目录保留了一批名字 —— `agent.yaml`、`prompts/`、`skills/`、
+`tools.py`、`checks.py`、`evals/`。agent 不能拿它们作他用。这就是「只有一套布局而不是
+两套」的价钱。
+
+有 Python 依赖的 agent 再加一个 `pyproject.toml` 来声明。让这个目录成为 agent 的不是
+它，而是 manifest。
 
 从概念上，一个 Agent 可以定义：
 
@@ -499,21 +505,19 @@ Agent package 放在 [`examples/`](examples/) 目录下。
 package。它的目录结构即是这套格式本身：
 
 ```text
+agent.yaml                            # manifest
 AGENT.md                              # agent card
-README.md                             # quickstart
-note_taker/                           # 实际发布的 package —— 运行时读到的一切都在这里
-├── agent.yaml                        # manifest
-├── prompts/system.md                 # instructions
-├── skills/concise-style/SKILL.md     # 一个可选能力
-├── tools.py                          # @tool 函数
-└── checks.py                         # @check 断言
-evals/benchmark.yaml                  # 开发脚手架，无需随包发布
+README.md                             # 快速上手
+prompts/system.md                     # instructions
+skills/concise-style/SKILL.md         # 一个可选能力
+tools.py                              # @tool 函数
+checks.py                             # @check 断言
+evals/benchmark.yaml                  # benchmark
 ```
 
-`from_pretrained` 接受项目目录，也接受里面的 package 目录：当一个目录自身没有
-`agent.yaml` 时，它会向下找一层，取其中唯一的 package。于是 manifest 只有一个
-落脚点 —— 在 package 内部，安装时会被一并带走 —— 项目根目录不需要任何东西去
-镜像它。
+八个文件，一层。`agent.push_to_hub("ray/note-taker")` 在 hub 里复现的就是这个目录
+—— 本库的测试断言了两者形状相等 —— 所以 pull 下来的 agent 自带 agent card 和
+benchmark，下一个 fork 它的人，`from_pretrained` → `eval` 直接就能跑。
 
 本库自己的测试套件用一个模拟的 model 驱动这个 agent，所以整个开发过程不需要
 API key，也不产生任何花费。

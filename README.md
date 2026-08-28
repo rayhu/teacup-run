@@ -201,29 +201,36 @@ An agent may contain:
 
 ```text
 agent/
+├── agent.yaml          # manifest: identity, model, tools, skills, budget, lineage
 ├── AGENT.md            # agent card: what it does, when to use it, eval numbers
 ├── README.md           # quickstart
-├── pyproject.toml      # or package.json — dependencies, version, entry point
-│
-├── <package>/          # the shipped artifact: what the agent needs at runtime
-│   ├── agent.yaml      # manifest: identity, model, tools, skills, budget, lineage
-│   ├── prompts/
-│   ├── skills/<skill>/SKILL.md
-│   └── tools/
-│
-├── evals/              # development scaffolding — need not ship
+├── prompts/
+├── skills/<skill>/SKILL.md
+├── tools.py            # or tools/ , when the agent needs more than one file
+├── checks.py           # what "done" means
+├── evals/              # the benchmark, so a fork can be measured against upstream
 └── tests/
 ```
 
-One rule makes this layout work: **everything the agent reads at runtime — the
-manifest included — must survive installation.** That is why `agent.yaml` sits
-inside `<package>/` rather than beside it: a manifest at the project root is not
-in the wheel. An agent whose prompts and skills only exist in a Git checkout can
-be cloned, but it cannot be installed and reused, which is the whole point.
+One rule makes this layout work: **the agent directory *is* the distributed
+artifact.** Publishing copies the directory; pulling gets that copy back. There
+is no second, narrower thing inside it that constitutes "the real package", so
+there is nothing to reconcile — what you edit is what someone else receives,
+prompts, skills, benchmark and all. Two kinds of thing stay behind, both by an
+explicit list rather than by where they sit: secrets (`.env`) and local dev
+residue (`.git`, `.venv`, caches, `node_modules`, build output).
 
-Loading an agent does not require knowing where the package sits — point
-`from_pretrained` at the project directory and it descends one level to the
-single package it finds.
+The rule is worth stating because the obvious alternative fails quietly. Nest
+the runtime files in an inner package and the published shape stops matching the
+source shape; you then need glue to carry the benchmark and the agent card
+across, and whatever the glue forgets is missing only for people downstream.
+
+The cost is that the format reserves names at the agent root — `agent.yaml`,
+`prompts/`, `skills/`, `tools.py`, `checks.py`, `evals/`. An agent cannot use
+those for anything else. That is the price of one layout instead of two.
+
+An agent with Python dependencies adds a `pyproject.toml` for them. It is not
+what makes the directory an agent; the manifest is.
 
 Conceptually, an agent can define:
 
@@ -529,22 +536,20 @@ Agent packages live in [`examples/`](examples/).
 loads. Its layout is the format:
 
 ```text
+agent.yaml                            # manifest
 AGENT.md                              # agent card
 README.md                             # quickstart
-note_taker/                           # the shipped package — everything read at runtime
-├── agent.yaml                        # manifest
-├── prompts/system.md                 # instructions
-├── skills/concise-style/SKILL.md     # an optional capability
-├── tools.py                          # @tool functions
-└── checks.py                         # @check predicates
-evals/benchmark.yaml                  # development scaffolding, need not ship
+prompts/system.md                     # instructions
+skills/concise-style/SKILL.md         # an optional capability
+tools.py                              # @tool functions
+checks.py                             # @check predicates
+evals/benchmark.yaml                  # the benchmark
 ```
 
-`from_pretrained` accepts either the project directory or the package inside it:
-given a directory with no `agent.yaml` of its own, it looks one level down and
-uses the single package it finds. So the manifest has exactly one home — inside
-the package, where installation will carry it — and nothing at the project root
-has to mirror it.
+Eight files, one level. `agent.push_to_hub("ray/note-taker")` reproduces exactly
+that directory in the hub — the library's test suite asserts the two shapes are
+equal — so a pulled agent arrives with its card and its benchmark, and
+`from_pretrained` → `eval` works for whoever forks it next.
 
 The library's own test suite exercises this agent with a simulated model, so the
 whole thing is developable without an API key and without spending anything.

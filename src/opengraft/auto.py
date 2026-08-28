@@ -15,7 +15,6 @@ needs. Everything it does is available underneath if you would rather call
 from __future__ import annotations
 
 import importlib.util
-import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -183,27 +182,7 @@ class AutoAgent:
         (target / "agent.yaml").write_text(
             yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True), encoding="utf-8"
         )
-        _publish_companions(self.spec.root, target)
         return target
-
-
-def _publish_companions(source: Path, target: Path) -> None:
-    """Carry the files that sit *beside* the package into the published copy.
-
-    `evals/` and `AGENT.md` are not runtime files — the package format keeps them
-    outside the shipped directory — but a pulled agent whose benchmark stayed
-    behind cannot be evaluated, which breaks `from_pretrained` -> `eval` for
-    everyone downstream. So they travel.
-    """
-    project = source.parent
-    for name in ("evals", "AGENT.md", "README.md"):
-        origin = project / name
-        if not origin.exists() or (target / name).exists():
-            continue
-        if origin.is_dir():
-            shutil.copytree(origin, target / name, ignore=shutil.ignore_patterns("__pycache__"))
-        else:
-            shutil.copy2(origin, target / name)
 
 
 # -- package loading -------------------------------------------------------
@@ -248,10 +227,14 @@ def _load_checks(root: Path) -> dict[str, Check]:
 
 
 def _default_benchmark(root: Path) -> Path:
-    """`evals/` sits beside the package, not inside it (it need not ship)."""
-    for candidate in (root / "evals" / "benchmark.yaml", root.parent / "evals" / "benchmark.yaml"):
-        if candidate.is_file():
-            return candidate
+    """`evals/` lives in the agent directory, so publishing carries it along.
+
+    That is what makes `from_pretrained` -> `eval` work for a pulled agent: the
+    benchmark travelled with it, and a fork can be measured against upstream.
+    """
+    candidate = root / "evals" / "benchmark.yaml"
+    if candidate.is_file():
+        return candidate
     raise ManifestError(
         f"no evals/benchmark.yaml found for {root.name}. Pass benchmark=<path> to eval()."
     )

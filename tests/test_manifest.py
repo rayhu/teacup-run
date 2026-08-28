@@ -89,7 +89,7 @@ def test_frontmatter_round_trip():
 
 
 def test_the_example_agent_is_a_valid_package(note_taker_path):
-    spec = AgentSpec.load(note_taker_path / "note_taker")
+    spec = AgentSpec.load(note_taker_path)
 
     assert spec.name == "opengraft/note-taker"
     assert "concise-style" in spec.available_skills()

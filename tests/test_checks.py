@@ -9,7 +9,7 @@ import pytest
 
 from opengraft.goal import BUILTIN_CHECKS, Attempt
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "note-taker" / "note_taker"
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "note-taker"
 sys.path.insert(0, str(EXAMPLE))
 import checks as note_taker_checks  # noqa: E402
 
