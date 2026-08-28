@@ -9,8 +9,8 @@ able to cost money, never quality.
 from __future__ import annotations
 
 from conftest import FakeModel, text_reply
-from opengraft.goal import Attempt, GoalVerdict, evaluate
-from opengraft.loop import run
+from teacup_run.goal import Attempt, GoalVerdict, evaluate
+from teacup_run.loop import run
 
 ALWAYS_OK = {"ok": lambda a: ""}
 ALWAYS_BAD = {"bad": lambda a: "Cite a source you actually read."}

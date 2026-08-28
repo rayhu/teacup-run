@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from opengraft import tool
+from teacup_run import tool
 
 
 @tool

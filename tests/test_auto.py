@@ -8,15 +8,15 @@ import pytest
 import yaml
 
 from conftest import FakeModel, text_reply, tool_reply
-from opengraft import AutoAgent
-from opengraft.manifest import AgentSpec, ManifestError
-from opengraft.registry import RegistryError
+from teacup_run import AutoAgent
+from teacup_run.manifest import AgentSpec, ManifestError
+from teacup_run.registry import RegistryError
 
 
 def test_from_pretrained_loads_a_local_package(note_taker_path):
     agent = AutoAgent.from_pretrained(str(note_taker_path))
 
-    assert agent.spec.name == "opengraft/note-taker"
+    assert agent.spec.name == "teacup/note-taker"
     assert [t.name for t in agent.tools] == ["save_action_item", "list_action_items"]
     # The package's own checks are registered alongside the library's builtins.
     assert "has_action_items" in agent.checks
@@ -171,7 +171,7 @@ def test_push_to_hub_then_pull_it_back(agent_copy, git_hub):
     published = AutoAgent.from_pretrained("ray/note-taker-plus", hub=git_hub)
 
     assert published.spec.name == "ray/note-taker-plus"
-    assert published.spec.derived_from == "opengraft/note-taker"   # lineage recorded
+    assert published.spec.derived_from == "teacup/note-taker"   # lineage recorded
     assert published.spec.version == "0.1.1"                       # version bumped
     assert published.spec.model_primary == "gpt-5"                 # the override travels
     assert "concise-style" in published.spec.skills                # so does the skill

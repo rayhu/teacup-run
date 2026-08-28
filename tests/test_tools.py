@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from opengraft.tools import Tool, ToolError, dispatch, tool
+from teacup_run.tools import Tool, ToolError, dispatch, tool
 
 
 @tool

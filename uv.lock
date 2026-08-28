@@ -393,6 +393,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "pyasn1-modules" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/41/64/55f316b729f92a552d26e00aa3b1542b2e149d0a5efe2842afff0cac7af7/google_auth-2.57.0.tar.gz", hash = "sha256:9b4f96d6a1feb5f7201231f47cfb3de08d8f176f8a61f9e461555116e95a8789", size = 370794, upload-time = "2026-08-25T19:18:26.419Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/00/f3/8508a702c094af5f6e89773f4dfdeee74913df0f41a02c21b5e7dc3d75cd/google_auth-2.57.0-py3-none-any.whl", hash = "sha256:180dafe015cfb62193bea26b677500fab5b9fd51a1e825ebf3ad9b182047ae59", size = 259728, upload-time = "2026-08-24T21:55:08.449Z" },
 ]
@@ -619,40 +620,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/7d/9c/ba0c292b4032ede74
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/db/2b7a1b3de659bb82aef979116c74e809982b13e42c057759767552b5155f/openai-3.3.1-py3-none-any.whl", hash = "sha256:9652df7fdf8ee6f5bd58e0a12f2b1d414a18e0f06bb7a9a57c8643a5f5469bd3", size = 1690337, upload-time = "2026-08-19T16:31:32.812Z" },
 ]
-
-[[package]]
-name = "opengraft"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "pyyaml" },
-]
-
-[package.optional-dependencies]
-anthropic = [
-    { name = "anthropic" },
-]
-dev = [
-    { name = "openai" },
-    { name = "pytest" },
-]
-google = [
-    { name = "google-genai" },
-]
-openai = [
-    { name = "openai" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
-    { name = "google-genai", marker = "extra == 'google'", specifier = ">=1.0" },
-    { name = "openai", marker = "extra == 'dev'", specifier = ">=1.60" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.60" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "pyyaml", specifier = ">=6" },
-]
-provides-extras = ["openai", "anthropic", "google", "dev"]
 
 [[package]]
 name = "packaging"
@@ -922,6 +889,40 @@ sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e0
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
 ]
+
+[[package]]
+name = "teacup-run"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
+dev = [
+    { name = "openai" },
+    { name = "pytest" },
+]
+google = [
+    { name = "google-genai" },
+]
+openai = [
+    { name = "openai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.40" },
+    { name = "google-genai", marker = "extra == 'google'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'dev'", specifier = ">=1.60" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.60" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+provides-extras = ["openai", "anthropic", "google", "dev"]
 
 [[package]]
 name = "tenacity"

@@ -112,7 +112,7 @@ class AgentSpec:
             name=str(require("name")),
             version=str(require("version")),
             description=str(data.get("description", "")),
-            framework=str(data.get("framework", "opengraft")),
+            framework=str(data.get("framework", "teacup")),
             entrypoint=(str(data["entrypoint"]) if data.get("entrypoint") else None),
             model_primary=str(model["primary"]),
             model_fallback=(str(model["fallback"]) if model.get("fallback") else None),

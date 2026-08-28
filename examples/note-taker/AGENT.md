@@ -1,9 +1,9 @@
-# opengraft/note-taker
+# teacup/note-taker
 
 > Agent card. `agent.yaml` is the machine-readable manifest; this is the page a
 > human reads before deciding to pull the agent.
 
-**Version** 0.1.0 · **Runtime** OpenGraft · **Lineage** root agent (no upstream)
+**Version** 0.1.0 · **Runtime** Teacup Run · **Lineage** root agent (no upstream)
 
 ## What it does
 
@@ -15,7 +15,7 @@ list is actionable rather than a summary of the conversation.
 Good fit:
 
 - Turning messy notes into a list someone can be held to.
-- A worked example of the OpenGraft package format: tools that write to shared
+- A worked example of the Teacup Run package format: tools that write to shared
   state, goal checks that read it, and a budget that stops the run.
 
 Poor fit:

@@ -1,8 +1,8 @@
-# OpenGraft
+# Teacup Run
 
 **Build on agents, not from scratch.**
 
-OpenGraft is an open-source library and registry for discovering, running, extending, evaluating, and publishing AI agents.
+Teacup Run is an open-source library and registry for discovering, running, extending, evaluating, and publishing AI agents.
 
 The idea is simple:
 
@@ -25,11 +25,11 @@ We believe agents need the same abstraction.
 
 ```bash
 pip install -e ".[openai]"       # or ".[anthropic]", ".[google]"
-export OPENAI_API_KEY=...        # or put it in .env and call opengraft.load_env()
+export OPENAI_API_KEY=...        # or put it in .env and call teacup_run.load_env()
 ```
 
 ```python
-from opengraft import AutoAgent
+from teacup_run import AutoAgent
 
 agent = AutoAgent.from_pretrained("examples/note-taker")
 agent.add_skill("concise-style")
@@ -71,10 +71,10 @@ predicates that decide when the work is actually done.
 
 Named, so nobody has to discover it: no MCP servers, no sub-agents or handoffs,
 no memory, no streaming, no async, no registry server, and no adapters for other
-frameworks — an OpenGraft package runs on OpenGraft's own loop. The package
+frameworks — a Teacup Run package runs on Teacup Run's own loop. The package
 format keeps a `framework:` field so that last one can change without a migration.
 
-## Why OpenGraft?
+## Why Teacup Run?
 
 The agent ecosystem is growing quickly, but reuse is still surprisingly difficult.
 
@@ -88,7 +88,7 @@ AutoModel.from_pretrained(...)
 
 for agents.
 
-OpenGraft aims to change that.
+Teacup Run aims to change that.
 
 An agent should be a **portable, composable, versioned, evaluable software artifact**.
 
@@ -135,7 +135,7 @@ agent.extend_instructions(
 Executing an agent must not require writing Python.
 
 ```bash
-opengraft run <ref> "<task>"
+teacup run <ref> "<task>"
 ```
 
 `<ref>` is the same reference `from_pretrained` takes: a local path, a name in
@@ -195,7 +195,7 @@ someone else discovers it
 
 ## Agents Are More Than Prompts
 
-An OpenGraft agent is not simply a system prompt.
+A Teacup Run agent is not simply a system prompt.
 
 An agent may contain:
 
@@ -251,13 +251,13 @@ The package format should remain readable, hackable, and friendly to Git.
 
 ## Framework-Agnostic by Design
 
-OpenGraft is not intended to become yet another agent orchestration framework.
+Teacup Run is not intended to become yet another agent orchestration framework.
 
 The ecosystem already has excellent frameworks.
 
 Our goal is to provide a portable layer **above and across them**.
 
-An OpenGraft package should eventually be able to wrap agents built with systems such as:
+A Teacup Run package should eventually be able to wrap agents built with systems such as:
 
 ```text
 OpenAI Agents SDK
@@ -269,7 +269,7 @@ CrewAI
 custom Python agents
 ```
 
-OpenGraft should not require developers to rewrite working agents simply to participate in the ecosystem.
+Teacup Run should not require developers to rewrite working agents simply to participate in the ecosystem.
 
 Existing frameworks should become backends, not competitors.
 
@@ -308,7 +308,7 @@ Agents consume resources.
 
 A useful agent should therefore be evaluated not only by whether it succeeds, but by **how efficiently it succeeds**.
 
-OpenGraft treats budget as part of execution:
+Teacup Run treats budget as part of execution:
 
 ```python
 result = agent.run(
@@ -366,7 +366,7 @@ Which one is best?
 
 It depends on the budget.
 
-OpenGraft aims to make **quality under resource constraints** a standard way to evaluate agents.
+Teacup Run aims to make **quality under resource constraints** a standard way to evaluate agents.
 
 Instead of asking only:
 
@@ -455,9 +455,9 @@ Developers should be able to see:
 
 Agent development can then become cumulative rather than repetitive.
 
-## What OpenGraft Is Not
+## What Teacup Run Is Not
 
-OpenGraft is **not** initially trying to be:
+Teacup Run is **not** initially trying to be:
 
 - an enterprise agent control plane
 - an RBAC product
@@ -477,7 +477,7 @@ The first problem is much simpler:
 
 ## Open Source First
 
-OpenGraft is intended to be built in the open.
+Teacup Run is intended to be built in the open.
 
 The initial users are developers, researchers, hackers, and agent builders—not procurement departments.
 
@@ -530,7 +530,7 @@ Agent packages live in [`examples/`](examples/).
 
 | Example | Framework | What it shows |
 |---|---|---|
-| [`note-taker`](examples/note-taker/) | OpenGraft | The reference implementation of the package format: a manifest, prompts, a composable skill, `@tool` functions, `@check` predicates that decide when the work is done, and a budgeted eval suite. |
+| [`note-taker`](examples/note-taker/) | Teacup Run | The reference implementation of the package format: a manifest, prompts, a composable skill, `@tool` functions, `@check` predicates that decide when the work is done, and a budgeted eval suite. |
 
 [`examples/note-taker`](examples/note-taker/) is the package the quickstart above
 loads. Its layout is the format:
@@ -560,7 +560,7 @@ replacing them is the point of the format, and one example cannot show it.
 
 ## Status
 
-OpenGraft is an early-stage idea and experimental open-source project.
+Teacup Run is an early-stage idea and experimental open-source project.
 
 APIs, package formats, and terminology are expected to evolve.
 

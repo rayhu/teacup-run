@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from opengraft.manifest import AgentSpec, ManifestError, parse_frontmatter, strip_frontmatter
+from teacup_run.manifest import AgentSpec, ManifestError, parse_frontmatter, strip_frontmatter
 
 MINIMAL = """
 name: test/agent
@@ -32,7 +32,7 @@ def test_it_parses_the_documented_keys(tmp_path):
     assert spec.goal_checks == ("non_empty",)
     assert spec.goal_max_attempts == 2
     assert spec.budget_usd == 0.5
-    assert spec.framework == "opengraft"  # defaulted
+    assert spec.framework == "teacup"  # defaulted
 
 
 @pytest.mark.parametrize("key", ["name", "version"])
@@ -91,6 +91,6 @@ def test_frontmatter_round_trip():
 def test_the_example_agent_is_a_valid_package(note_taker_path):
     spec = AgentSpec.load(note_taker_path)
 
-    assert spec.name == "opengraft/note-taker"
+    assert spec.name == "teacup/note-taker"
     assert "concise-style" in spec.available_skills()
     assert spec.instructions()

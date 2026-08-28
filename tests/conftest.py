@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from opengraft.model import Reply, ToolCall, Usage
+from teacup_run.model import Reply, ToolCall, Usage
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 

@@ -1,16 +1,16 @@
-# OpenGraft package manifest.
+# Teacup Run package manifest.
 #
 # This directory is the agent: everything below — this file, prompts/, skills/,
 # tools.py, checks.py, evals/ — is what publishing copies and pulling gets back.
 # There is no separate "shipped" subset, so nothing can be left behind.
 
-name: opengraft/note-taker
+name: teacup/note-taker
 version: 0.1.0
 description: Turns raw meeting notes into owned, dated action items.
 
-# The runtime is OpenGraft's own loop. The field exists so a package can declare
+# The runtime is Teacup Run's own loop. The field exists so a package can declare
 # a different one later without changing the format.
-framework: opengraft
+framework: teacup
 
 model:
   primary: gpt-5-mini

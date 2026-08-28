@@ -7,7 +7,7 @@ failure is fed back to the model as the next attempt's input.
 
 from __future__ import annotations
 
-from opengraft import Attempt, check
+from teacup_run import Attempt, check
 
 
 @check

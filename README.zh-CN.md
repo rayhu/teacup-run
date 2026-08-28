@@ -1,8 +1,8 @@
-# OpenGraft
+# Teacup Run
 
 **不要从零开始造 Agent。在别人的 Agent 之上继续构建。**
 
-OpenGraft 是一个开源的 Agent library 与 registry，用于发现、加载、运行、扩展、评测和发布 AI Agent。
+Teacup Run 是一个开源的 Agent library 与 registry，用于发现、加载、运行、扩展、评测和发布 AI Agent。
 
 核心想法非常简单：
 
@@ -21,7 +21,7 @@ agent.push_to_hub("ray/deep-research-plus")
 
 我们认为 Agent 也需要同样的抽象。
 
-## 为什么需要 OpenGraft？
+## 为什么需要 Teacup Run？
 
 Agent 生态正在快速发展，但 Agent 的复用仍然非常困难。
 
@@ -33,7 +33,7 @@ Agent 世界目前仍然缺少一个被广泛采用的：
 AutoModel.from_pretrained(...)
 ```
 
-OpenGraft 希望解决这个问题。
+Teacup Run 希望解决这个问题。
 
 一个 Agent 应当成为一种：
 
@@ -82,7 +82,7 @@ agent.extend_instructions(
 执行一个 agent 不应该需要写 Python。
 
 ```bash
-opengraft run <ref> "<task>"
+teacup run <ref> "<task>"
 ```
 
 `<ref>` 就是 `from_pretrained` 接受的那种引用：本地路径、hub 中的名字，或一个
@@ -142,7 +142,7 @@ Fork
 
 ## Agent 不只是 Prompt
 
-OpenGraft 中的 Agent 不是简单的一段 system prompt。
+Teacup Run 中的 Agent 不是简单的一段 system prompt。
 
 一个 Agent package 可以包含：
 
@@ -196,13 +196,13 @@ Package format 应当保持简单、可读、可修改，并且天然适合 Git�
 
 ## Framework-Agnostic
 
-OpenGraft **不希望成为又一个 Agent orchestration framework**。
+Teacup Run **不希望成为又一个 Agent orchestration framework**。
 
 这个领域已经存在很多优秀的 framework。
 
 我们的目标，是建立一个位于它们之上、横跨不同 framework 的可移植层。
 
-未来，一个 OpenGraft package 应当能够包装来自以下系统的 Agent：
+未来，一个 Teacup Run package 应当能够包装来自以下系统的 Agent：
 
 ```text
 OpenAI Agents SDK
@@ -214,9 +214,9 @@ CrewAI
 自定义 Python Agent
 ```
 
-开发者不应该为了加入 OpenGraft 生态，就被迫重写一个已经正常工作的 Agent。
+开发者不应该为了加入 Teacup Run 生态，就被迫重写一个已经正常工作的 Agent。
 
-现有 framework 应该成为 OpenGraft 的 **backend，而不是 competitor**。
+现有 framework 应该成为 Teacup Run 的 **backend，而不是 competitor**。
 
 ## Skill：可组合的能力
 
@@ -263,7 +263,7 @@ Agent 会消耗资源。
 
 > **它以多高的效率完成了任务。**
 
-OpenGraft 把 Budget 直接作为执行过程的一部分：
+Teacup Run 把 Budget 直接作为执行过程的一部分：
 
 ```python
 result = agent.run(
@@ -321,7 +321,7 @@ Compute           $0.08
 
 答案取决于你的预算。
 
-OpenGraft 希望把 **Quality Under Constraints（约束条件下的质量）** 变成 Agent 的标准评测方式。
+Teacup Run 希望把 **Quality Under Constraints（约束条件下的质量）** 变成 Agent 的标准评测方式。
 
 我们不应该只问：
 
@@ -414,9 +414,9 @@ Hub 应该理解这些关系。
 
 这样 Agent 的开发才能真正变成**累积式创新，而不是不断重复造轮子**。
 
-## OpenGraft 暂时不做什么
+## Teacup Run 暂时不做什么
 
-OpenGraft 初期**不打算**成为：
+Teacup Run 初期**不打算**成为：
 
 - Enterprise Agent Control Plane
 - RBAC 产品
@@ -436,7 +436,7 @@ OpenGraft 初期**不打算**成为：
 
 ## Open Source First
 
-OpenGraft 希望从一开始就在开放社区中构建。
+Teacup Run 希望从一开始就在开放社区中构建。
 
 第一批用户应该是：
 
@@ -499,7 +499,7 @@ Agent package 放在 [`examples/`](examples/) 目录下。
 
 | 示例 | Framework | 展示了什么 |
 |---|---|---|
-| [`note-taker`](examples/note-taker/) | OpenGraft | package format 的参考实现：manifest、prompts、可组合的 skill、`@tool` 函数、决定「什么算做完」的 `@check` 断言，以及一套带预算的 eval。 |
+| [`note-taker`](examples/note-taker/) | Teacup Run | package format 的参考实现：manifest、prompts、可组合的 skill、`@tool` 函数、决定「什么算做完」的 `@check` 断言，以及一套带预算的 eval。 |
 
 [`examples/note-taker`](examples/note-taker/) 就是上面 quickstart 加载的那个
 package。它的目录结构即是这套格式本身：
@@ -527,7 +527,7 @@ API key，也不产生任何花费。
 
 ## 项目状态
 
-OpenGraft 目前仍处于早期构想和实验性开源阶段。
+Teacup Run 目前仍处于早期构想和实验性开源阶段。
 
 API、package format 和术语都可能快速变化。
 

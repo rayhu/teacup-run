@@ -1,9 +1,9 @@
 # note-taker
 
-The OpenGraft example agent: raw meeting notes in, owned action items out.
+The Teacup Run example agent: raw meeting notes in, owned action items out.
 
 ```python
-from opengraft import AutoAgent
+from teacup_run import AutoAgent
 
 agent = AutoAgent.from_pretrained("examples/note-taker")
 agent.add_skill("concise-style")

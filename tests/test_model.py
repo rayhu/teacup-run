@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from opengraft.model import (
+from teacup_run.model import (
     ProviderError,
     _gemini_schema,
     _strip_internal,

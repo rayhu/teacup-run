@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from conftest import FakeModel, text_reply, tool_reply
-from opengraft.budget import Budget
-from opengraft.loop import run
-from opengraft.tools import tool
+from teacup_run.budget import Budget
+from teacup_run.loop import run
+from teacup_run.tools import tool
 
 
 @tool

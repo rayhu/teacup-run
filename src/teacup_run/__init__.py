@@ -1,6 +1,6 @@
-"""OpenGraft — build on agents, not from scratch.
+"""Teacup Run — build on agents, not from scratch.
 
-    from opengraft import AutoAgent
+    from teacup_run import AutoAgent
 
     agent = AutoAgent.from_pretrained("examples/note-taker")
     agent.add_skill("citation-style")

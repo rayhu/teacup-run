@@ -45,7 +45,7 @@ def check(fn: Check) -> Check:
     Used by the library for its builtins and by an agent package's own
     `checks.py`, so a manifest can name either.
     """
-    fn.is_opengraft_check = True  # type: ignore[attr-defined]
+    fn.is_teacup_run_check = True  # type: ignore[attr-defined]
     return fn
 
 

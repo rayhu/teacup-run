@@ -9,7 +9,7 @@
 The class is a thin facade: it resolves a reference to a directory, loads the
 manifest, imports that package's tools and checks, and hands the loop what it
 needs. Everything it does is available underneath if you would rather call
-`opengraft.run()` yourself.
+`teacup_run.run()` yourself.
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ def _load_tools(root: Path) -> dict[str, Tool]:
         path = root / "tools" / "__init__.py"
     if not path.is_file():
         return {}
-    module = _load_module(path, f"opengraft_pkg_{root.name}_tools")
+    module = _load_module(path, f"teacup_run_pkg_{root.name}_tools")
     return {
         value.name: value
         for value in vars(module).values()
@@ -218,11 +218,11 @@ def _load_checks(root: Path) -> dict[str, Check]:
     path = root / "checks.py"
     if not path.is_file():
         return {}
-    module = _load_module(path, f"opengraft_pkg_{root.name}_checks")
+    module = _load_module(path, f"teacup_run_pkg_{root.name}_checks")
     return {
         name: value
         for name, value in vars(module).items()
-        if callable(value) and getattr(value, "is_opengraft_check", False)
+        if callable(value) and getattr(value, "is_teacup_run_check", False)
     }
 
 

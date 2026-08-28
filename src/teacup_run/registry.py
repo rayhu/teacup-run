@@ -45,8 +45,8 @@ class RegistryError(RuntimeError):
 
 
 def hub_path() -> Path:
-    """Where pulled and published agents live. Override with `OPENGRAFT_HOME`."""
-    return Path(os.environ.get("OPENGRAFT_HOME", Path.home() / ".opengraft")) / "agents"
+    """Where pulled and published agents live. Override with `TEACUP_HOME`."""
+    return Path(os.environ.get("TEACUP_HOME", Path.home() / ".teacup")) / "agents"
 
 
 def _is_git_url(ref: str) -> bool:

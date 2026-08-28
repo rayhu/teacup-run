@@ -30,6 +30,7 @@ htmlcov/
 .nox/
 
 # Editors
+.claude/
 .idea/
 .vscode/
 *.swp
@@ -37,6 +38,6 @@ htmlcov/
 # macOS
 .DS_Store
 
-# OpenGraft
+# Teacup Run
 # The local hub is a cache of pulled agents, not source.
-.opengraft/
+.teacup/

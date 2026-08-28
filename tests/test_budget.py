@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from opengraft.budget import Budget, BudgetExceeded, Ledger, price_for
+from teacup_run.budget import Budget, BudgetExceeded, Ledger, price_for
 
 
 def test_prices_match_on_longest_prefix():

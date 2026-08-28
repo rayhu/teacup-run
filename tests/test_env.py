@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from opengraft import load_env
+from teacup_run import load_env
 
 
 def test_it_loads_keys_from_a_dotenv(tmp_path, monkeypatch):

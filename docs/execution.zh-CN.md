@@ -1,7 +1,7 @@
 # 执行一个 agent
 
 **状态：** 提案，等待 review。以下内容尚未实现。
-**范围：** `opengraft run` 的设计。它所实现的那条规则 —— 执行一个 agent 不应该需要写
+**范围：** `teacup run` 的设计。它所实现的那条规则 —— 执行一个 agent 不应该需要写
 Python —— 写在 [README](../README.zh-CN.md) 里。
 **翻译：** 本文是 [execution.md](execution.md) 的中文版。英文版为原文，两者不一致时以
 英文版为准。
@@ -11,7 +11,7 @@ Python —— 写在 [README](../README.zh-CN.md) 里。
 ## 1. 命令
 
 ```
-opengraft run <ref> <task>
+teacup run <ref> <task>
 
   --budget USD          覆盖 manifest 中的 budget
   --model NAME          覆盖 manifest 中的 model
@@ -26,7 +26,7 @@ opengraft run <ref> <task>
 ```
 
 `<ref>` 是本地路径、hub 中的名字，或一个 git URL —— 与 `AutoAgent.from_pretrained`
-接受的完全一致。[`registry.resolve`](../src/opengraft/registry.py) 已经做了这层解析，
+接受的完全一致。[`registry.resolve`](../src/teacup_run/registry.py) 已经做了这层解析，
 CLI 只是它的第二个调用者。
 
 当 `<task>` 为 `-` 时，任务从 stdin 读取，这样笔记可以直接 pipe 进来。
@@ -48,7 +48,7 @@ manifest、tools、checks、skills、budget）。`run` 一个都不依赖。
 6. 到这一步才调用 model。
 
 第 4、5 步的存在，是为了让缺失的 key 在任何花费之前就失败，而不是跑到一半 401。
-[`env.py:17`](../src/opengraft/env.py#L17) 已经会拒绝占位符值（`sk-...`、
+[`env.py:17`](../src/teacup_run/env.py#L17) 已经会拒绝占位符值（`sk-...`、
 `your-key-here`）；它尚未覆盖的是「值根本不存在」，而那恰恰是每个新用户都会撞上的情况。
 
 **第 4 步不能挪进 `AgentSpec.validate()`。** 后者是在 `from_pretrained()` 内部跑的，
@@ -64,7 +64,7 @@ def missing_environment(self) -> tuple[str, ...]:
 ## 3. 环境变量
 
 CLI 永远不读 agent package 内部的 `.env`。`.env` 从不进 git、也从不随包发布 ——
-[`.gitignore`](../.gitignore) 在任意层级忽略它，[`registry.publish`](../src/opengraft/registry.py)
+[`.gitignore`](../.gitignore) 在任意层级忽略它，[`registry.publish`](../src/teacup_run/registry.py)
 通过 `ignore_patterns("__pycache__", "*.pyc", ".env")` 把它剥掉 —— 所以一个依赖它的
 package，在别人 publish 的那一刻就会坏掉。凭据属于 agent 运行的那个环境，不属于制品。
 package 只声明它需要的那些**名字**，通过 `environment.required`。
@@ -83,7 +83,7 @@ CLI 转而去这些地方找：
 又挂载了一个装着过期 key 的 `.env` 的容器，拿到的是导出的那个值。
 `load_env(override=False)` 现在就是这个行为。
 
-规则 4 就是 [`load_env()`](../src/opengraft/env.py) 现有的 cwd 向上搜索，原样不动，
+规则 4 就是 [`load_env()`](../src/teacup_run/env.py) 现有的 cwd 向上搜索，原样不动，
 可用 `--no-dotenv` 关闭。它是开发期的便利设施，不是正式机制。
 
 **后续项：** [`.gitignore`](../.gitignore) 放行了 `.env.example`，但这个文件不存在。
@@ -91,22 +91,22 @@ CLI 转而去这些地方找：
 
 ## 4. 配置
 
-`~/.config/opengraft/config.yaml`，遵循 XDG。用 YAML，和 `agent.yaml`、
-`benchmark.yaml` 一致。可被 `OPENGRAFT_CONFIG` 覆盖，或按次调用用 `--config PATH`
+`~/.config/teacup/config.yaml`，遵循 XDG。用 YAML，和 `agent.yaml`、
+`benchmark.yaml` 一致。可被 `TEACUP_CONFIG` 覆盖，或按次调用用 `--config PATH`
 覆盖。文件不存在是合法状态：每个键都有默认值，CLI 在完全没有配置文件时也必须能跑。
-hub 缓存仍留在 [`hub_path()`](../src/opengraft/registry.py) 指定的位置，
-即 `~/.opengraft/agents`。
+hub 缓存仍留在 [`hub_path()`](../src/teacup_run/registry.py) 指定的位置，
+即 `~/.teacup/agents`。
 
 ```yaml
-# ~/.config/opengraft/config.yaml —— 只放设置，永远不放 secret。
-env_file: ~/.config/opengraft/secrets.env
+# ~/.config/teacup/config.yaml —— 只放设置，永远不放 secret。
+env_file: ~/.config/teacup/secrets.env
 
 defaults:
   budget_usd: 1.00
   model: null          # null：听 manifest 的
 
 hub:
-  path: ~/.opengraft/agents
+  path: ~/.teacup/agents
   auto_pull: false
 
 output:
@@ -118,7 +118,7 @@ output:
 它可以安全地提交进 dotfiles 仓库 —— 而不管我们是否希望，这类文件最终都会进 dotfiles
 仓库。
 
-设置的优先级，从高到低：CLI flag，然后 `OPENGRAFT_*` 环境变量（`OPENGRAFT_HOME` 已经
+设置的优先级，从高到低：CLI flag，然后 `TEACUP_*` 环境变量（`TEACUP_HOME` 已经
 存在，且必须继续压过 `hub.path`），然后配置文件，然后 agent 的 manifest，最后是内置
 默认值。
 
@@ -131,8 +131,8 @@ output:
 - **stderr** —— preflight 回显与 cost ledger。
 - `--json` —— stdout 上一个 JSON 对象，且 stdout 上*没有别的东西*。
 
-于是 `opengraft run ... > answer.txt` 会留下一个干净的文件，同时 ledger 仍显示在终端
-上；`opengraft run ... --json | jq .cost.total` 也能正常工作。
+于是 `teacup run ... > answer.txt` 会留下一个干净的文件，同时 ledger 仍显示在终端
+上；`teacup run ... --json | jq .cost.total` 也能正常工作。
 
 | 退出码 | 含义 |
 |---:|---|
@@ -142,7 +142,7 @@ output:
 | 3 | 提前停止：运行时错误 |
 | 4 | 没能开始：ref 无效、manifest 非法，或环境变量缺失 |
 
-退出码 2 和 3 需要改动库本身。[`loop.py`](../src/opengraft/loop.py) 目前把两者压进了
+退出码 2 和 3 需要改动库本身。[`loop.py`](../src/teacup_run/loop.py) 目前把两者压进了
 同一个字符串 —— `BudgetExceeded` 把 `stop_reason` 设为 `exc.reason`，普通异常设为
 `f"{type(exc).__name__}: {exc}"` —— 靠 parse 这个字符串来区分是个坏味道。给 `Result`
 加一个判别字段：
@@ -165,7 +165,7 @@ stop_kind: str | None = None   # "budget" | "error" | None
 
 ```json
 {
-  "agent":   {"name": "opengraft/note-taker", "version": "0.1.0", "ref": "examples/note-taker"},
+  "agent":   {"name": "teacup/note-taker", "version": "0.1.0", "ref": "examples/note-taker"},
   "model":   "gpt-5-mini",
   "task":    "Notes: ...",
   "answer":  "Action items\n- Ray: ...",
@@ -183,20 +183,20 @@ stop_kind: str | None = None   # "budget" | "error" | None
 
 除两个字段外，其余都能从今天已有的 `Result`、`GoalVerdict`、`Ledger`、`Budget` 上直接
 读到。例外是：来自 §5 的 `stopped.kind`，以及 `budget.remaining` —— 后者今天只是
-[`Ledger.render`](../src/opengraft/budget.py#L158) 内部的一个表达式。
+[`Ledger.render`](../src/teacup_run/budget.py#L158) 内部的一个表达式。
 
 ## 8. 实施计划
 
 | # | 改动 | 文件 |
 |---:|---|---|
-| 1 | 给 `Result` 加 `stop_kind`，在两个 `except` 处分别赋值 | `src/opengraft/loop.py` |
-| 2 | `AgentSpec.missing_environment()` | `src/opengraft/manifest.py` |
-| 3 | `Budget.remaining(ledger)` —— 从 `Ledger.render` 里提出来 | `src/opengraft/budget.py` |
-| 4 | 让 `load_env` 的 cwd 搜索可被跳过；它本来就接受显式路径、也本来就返回实际使用的文件，preflight 直接回显该返回值 | `src/opengraft/env.py` |
-| 5 | 配置加载器：读取、默认值、优先级（§4） | `src/opengraft/config.py` *(新增)* |
-| 6 | 从 `AgentSpec` 中删掉没人用的 `entrypoint` 字段 | `src/opengraft/manifest.py` |
-| 7 | `cli.py`：参数解析、preflight、运行、渲染、退出码、`--json` | `src/opengraft/cli.py` *(新增)* |
-| 8 | `[project.scripts] opengraft = "opengraft.cli:main"` | `pyproject.toml` |
+| 1 | 给 `Result` 加 `stop_kind`，在两个 `except` 处分别赋值 | `src/teacup_run/loop.py` |
+| 2 | `AgentSpec.missing_environment()` | `src/teacup_run/manifest.py` |
+| 3 | `Budget.remaining(ledger)` —— 从 `Ledger.render` 里提出来 | `src/teacup_run/budget.py` |
+| 4 | 让 `load_env` 的 cwd 搜索可被跳过；它本来就接受显式路径、也本来就返回实际使用的文件，preflight 直接回显该返回值 | `src/teacup_run/env.py` |
+| 5 | 配置加载器：读取、默认值、优先级（§4） | `src/teacup_run/config.py` *(新增)* |
+| 6 | 从 `AgentSpec` 中删掉没人用的 `entrypoint` 字段 | `src/teacup_run/manifest.py` |
+| 7 | `cli.py`：参数解析、preflight、运行、渲染、退出码、`--json` | `src/teacup_run/cli.py` *(新增)* |
+| 8 | `[project.scripts] teacup = "teacup_run.cli:main"` | `pyproject.toml` |
 | 9 | `.env.example`，只有变量名、没有值 | 仓库根目录 |
 | 10 | 测试：preflight 失败、退出码、JSON 形状、`--dry-run` | `tests/test_cli.py` *(新增)* |
 
@@ -209,7 +209,7 @@ stop_kind: str | None = None   # "budget" | "error" | None
 
 ## 9. 开放问题
 
-1. **`run` 遇到未解析的 ref 时应该自动 pull 吗？** 还是要求先跑 `opengraft pull`？
+1. **`run` 遇到未解析的 ref 时应该自动 pull 吗？** 还是要求先跑 `teacup pull`？
    自动 pull 更友好；显式 pull 则意味着 `run` 永远不会自己去访问网络。
 2. **「goal 未达成」用退出码 1**，会把一次诚实完成、没超预算的运行判成失败。对 CI 来说
    是对的，交互使用时可能意外。保持原样，还是放到 `--strict` 后面？

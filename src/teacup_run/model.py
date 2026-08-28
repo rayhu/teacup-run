@@ -1,4 +1,4 @@
-"""The one place OpenGraft talks to a model provider.
+"""The one place Teacup Run talks to a model provider.
 
 Deliberately a function rather than a class hierarchy: adding a provider is one
 `elif`, and faking the model in tests is one `monkeypatch`. Everything above this
@@ -8,7 +8,7 @@ this function normalises the reply.
 Message shape is OpenAI's chat format, used as the neutral wire format; the other
 branches translate to and from it.
 
-One convention: message keys starting with `_` are OpenGraft's own and are
+One convention: message keys starting with `_` are Teacup Run's own and are
 stripped before anything is sent. They carry provider-native data that has to be
 replayed verbatim — Gemini, for instance, rejects a conversation whose function
 calls come back without the `thought_signature` it issued.
@@ -88,12 +88,12 @@ def _import(name: str, extra: str):
         return __import__(name)
     except ImportError as exc:  # pragma: no cover - depends on what is installed
         raise ProviderError(
-            f"{name} is not installed. Install it with: pip install 'opengraft[{extra}]'"
+            f"{name} is not installed. Install it with: pip install 'teacup-run[{extra}]'"
         ) from exc
 
 
 def _strip_internal(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Drop OpenGraft-internal keys before a message goes to a provider."""
+    """Drop Teacup Run-internal keys before a message goes to a provider."""
     return [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
 
 

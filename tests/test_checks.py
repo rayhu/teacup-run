@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from opengraft.goal import BUILTIN_CHECKS, Attempt
+from teacup_run.goal import BUILTIN_CHECKS, Attempt
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "note-taker"
 sys.path.insert(0, str(EXAMPLE))
@@ -74,4 +74,4 @@ def test_items_appear_in_answer_catches_a_recorded_but_unlisted_item():
 
 def test_the_example_agents_checks_are_registered():
     for name in ("has_action_items", "every_item_has_owner", "items_appear_in_answer"):
-        assert getattr(getattr(note_taker_checks, name), "is_opengraft_check", False)
+        assert getattr(getattr(note_taker_checks, name), "is_teacup_run_check", False)

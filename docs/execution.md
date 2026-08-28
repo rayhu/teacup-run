@@ -1,7 +1,7 @@
 # Executing an agent
 
 **Status:** proposal, awaiting review. Nothing here is implemented yet.
-**Scope:** the design of `opengraft run`. The rule it implements — executing an
+**Scope:** the design of `teacup run`. The rule it implements — executing an
 agent must not require writing Python — is stated in the [README](../README.md).
 **Translation:** [中文版](execution.zh-CN.md). This file is the original; if the
 two disagree, this one is right.
@@ -11,7 +11,7 @@ two disagree, this one is right.
 ## 1. The command
 
 ```
-opengraft run <ref> <task>
+teacup run <ref> <task>
 
   --budget USD          override the manifest budget
   --model NAME          override the manifest model
@@ -26,7 +26,7 @@ opengraft run <ref> <task>
 ```
 
 `<ref>` is a local path, a name in the hub, or a git URL — exactly what
-`AutoAgent.from_pretrained` accepts. [`registry.resolve`](../src/opengraft/registry.py)
+`AutoAgent.from_pretrained` accepts. [`registry.resolve`](../src/teacup_run/registry.py)
 already performs that resolution; the CLI is its second caller.
 
 When `<task>` is `-`, the task is read from stdin, so notes can be piped in.
@@ -50,7 +50,7 @@ Every run, in this order:
 6. Only then call the model.
 
 Steps 4 and 5 exist so that a missing key fails before any spend rather than
-401-ing mid-run. [`env.py:17`](../src/opengraft/env.py#L17) already rejects
+401-ing mid-run. [`env.py:17`](../src/teacup_run/env.py#L17) already rejects
 placeholder values (`sk-...`, `your-key-here`); absent values are the case it
 does not yet cover, and the one every new user hits.
 
@@ -68,7 +68,7 @@ def missing_environment(self) -> tuple[str, ...]:
 
 The CLI never reads a `.env` from inside an agent package. A `.env` is never
 committed and never ships — [`.gitignore`](../.gitignore) ignores it at any
-depth and [`registry.publish`](../src/opengraft/registry.py) strips it via
+depth and [`registry.publish`](../src/teacup_run/registry.py) strips it via
 `ignore_patterns("__pycache__", "*.pyc", ".env")` — so a package that depended on
 one would break the moment somebody published it. Credentials belong to the
 environment an agent runs in, not to the artifact. A package declares only the
@@ -89,7 +89,7 @@ variable** over whatever that file supplies. A container that exports
 `OPENAI_API_KEY` and also mounts a `.env` holding a stale one gets the exported
 value. `load_env(override=False)` already behaves this way.
 
-Rule 4 is [`load_env()`](../src/opengraft/env.py)'s existing cwd-upward search,
+Rule 4 is [`load_env()`](../src/teacup_run/env.py)'s existing cwd-upward search,
 unchanged, and disabled by `--no-dotenv`. It is a development affordance, not the
 mechanism.
 
@@ -99,22 +99,22 @@ the thing a new contributor copies.
 
 ## 4. Configuration
 
-`~/.config/opengraft/config.yaml`, following XDG. YAML, matching `agent.yaml` and
-`benchmark.yaml`. Overridden by `OPENGRAFT_CONFIG`, or per-invocation by
+`~/.config/teacup/config.yaml`, following XDG. YAML, matching `agent.yaml` and
+`benchmark.yaml`. Overridden by `TEACUP_CONFIG`, or per-invocation by
 `--config PATH`. Absent is a valid state: every key has a default, and the CLI
 must work with no config file at all. The hub cache stays where
-[`hub_path()`](../src/opengraft/registry.py) puts it, `~/.opengraft/agents`.
+[`hub_path()`](../src/teacup_run/registry.py) puts it, `~/.teacup/agents`.
 
 ```yaml
-# ~/.config/opengraft/config.yaml — settings, never secrets.
-env_file: ~/.config/opengraft/secrets.env
+# ~/.config/teacup/config.yaml — settings, never secrets.
+env_file: ~/.config/teacup/secrets.env
 
 defaults:
   budget_usd: 1.00
   model: null          # null: whatever the manifest asks for
 
 hub:
-  path: ~/.opengraft/agents
+  path: ~/.teacup/agents
   auto_pull: false
 
 output:
@@ -126,8 +126,8 @@ output:
 That is what keeps it safe to commit to a dotfiles repository, which is where a
 file like this ends up whether or not we intend it to.
 
-Settings precedence, highest first: CLI flags, then `OPENGRAFT_*` environment
-variables (`OPENGRAFT_HOME` already exists and must keep winning over
+Settings precedence, highest first: CLI flags, then `TEACUP_*` environment
+variables (`TEACUP_HOME` already exists and must keep winning over
 `hub.path`), then the config file, then the agent's manifest, then built-in
 defaults.
 
@@ -140,8 +140,8 @@ a config file that could set `OPENAI_API_KEY` directly would undo §3.
 - **stderr** — the preflight echo and the cost ledger.
 - `--json` — one JSON object on stdout, and *nothing* else on stdout.
 
-So `opengraft run ... > answer.txt` leaves a clean file with the ledger still on
-the terminal, and `opengraft run ... --json | jq .cost.total` works.
+So `teacup run ... > answer.txt` leaves a clean file with the ledger still on
+the terminal, and `teacup run ... --json | jq .cost.total` works.
 
 | Code | Meaning |
 |---:|---|
@@ -151,7 +151,7 @@ the terminal, and `opengraft run ... --json | jq .cost.total` works.
 | 3 | Stopped early: runtime error |
 | 4 | Did not start: bad ref, invalid manifest, or missing environment |
 
-Codes 2 and 3 need a library change. [`loop.py`](../src/opengraft/loop.py)
+Codes 2 and 3 need a library change. [`loop.py`](../src/teacup_run/loop.py)
 currently collapses both into one string — `BudgetExceeded` sets `stop_reason` to
 `exc.reason`, a generic exception sets it to `f"{type(exc).__name__}: {exc}"` —
 and telling them apart by parsing that string is a smell. `Result` gets a
@@ -176,7 +176,7 @@ the existing `model_fn` seam) is a separate feature.
 
 ```json
 {
-  "agent":   {"name": "opengraft/note-taker", "version": "0.1.0", "ref": "examples/note-taker"},
+  "agent":   {"name": "teacup/note-taker", "version": "0.1.0", "ref": "examples/note-taker"},
   "model":   "gpt-5-mini",
   "task":    "Notes: ...",
   "answer":  "Action items\n- Ray: ...",
@@ -194,20 +194,20 @@ the existing `model_fn` seam) is a separate feature.
 
 Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except two:
 `stopped.kind` from §5, and `budget.remaining`, which today exists only as an
-expression inside [`Ledger.render`](../src/opengraft/budget.py#L158).
+expression inside [`Ledger.render`](../src/teacup_run/budget.py#L158).
 
 ## 8. Implementation plan
 
 | # | Change | Files |
 |---:|---|---|
-| 1 | `stop_kind` on `Result`, set at both `except` sites | `src/opengraft/loop.py` |
-| 2 | `AgentSpec.missing_environment()` | `src/opengraft/manifest.py` |
-| 3 | `Budget.remaining(ledger)` — lift it out of `Ledger.render` | `src/opengraft/budget.py` |
-| 4 | Make `load_env`'s cwd search skippable; it already takes an explicit path and returns the file it used, which preflight echoes | `src/opengraft/env.py` |
-| 5 | Config loader: read, defaults, precedence (§4) | `src/opengraft/config.py` *(new)* |
-| 6 | Delete the unused `entrypoint` field from `AgentSpec` | `src/opengraft/manifest.py` |
-| 7 | `cli.py`: arg parsing, preflight, run, render, exit codes, `--json` | `src/opengraft/cli.py` *(new)* |
-| 8 | `[project.scripts] opengraft = "opengraft.cli:main"` | `pyproject.toml` |
+| 1 | `stop_kind` on `Result`, set at both `except` sites | `src/teacup_run/loop.py` |
+| 2 | `AgentSpec.missing_environment()` | `src/teacup_run/manifest.py` |
+| 3 | `Budget.remaining(ledger)` — lift it out of `Ledger.render` | `src/teacup_run/budget.py` |
+| 4 | Make `load_env`'s cwd search skippable; it already takes an explicit path and returns the file it used, which preflight echoes | `src/teacup_run/env.py` |
+| 5 | Config loader: read, defaults, precedence (§4) | `src/teacup_run/config.py` *(new)* |
+| 6 | Delete the unused `entrypoint` field from `AgentSpec` | `src/teacup_run/manifest.py` |
+| 7 | `cli.py`: arg parsing, preflight, run, render, exit codes, `--json` | `src/teacup_run/cli.py` *(new)* |
+| 8 | `[project.scripts] teacup = "teacup_run.cli:main"` | `pyproject.toml` |
 | 9 | `.env.example` with the variable names, no values | repository root |
 | 10 | Tests: preflight failures, exit codes, JSON shape, `--dry-run` | `tests/test_cli.py` *(new)* |
 
@@ -220,7 +220,7 @@ spend, like the rest of the suite.
 
 ## 9. Open questions
 
-1. **Should `run` auto-pull an unresolved ref**, or require `opengraft pull`
+1. **Should `run` auto-pull an unresolved ref**, or require `teacup pull`
    first? Auto-pull is friendlier; explicit pull means `run` never reaches the
    network on its own.
 2. **Exit code 1 for "goal not met"** treats an honest, completed, under-budget
