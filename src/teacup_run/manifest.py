@@ -30,6 +30,10 @@ class AgentSpec:
     version: str
     description: str
     framework: str
+    # Unused when framework == "teacup" (the native loop needs no external command).
+    # For any other framework it is the base command a backend shells out to — e.g.
+    # "uv run teacup-agent" for framework: teacup-agent-cli (external_cli.py). Kept
+    # deliberately, not deleted: see docs/execution.md item #6.
     entrypoint: str | None
     model_primary: str
     model_fallback: str | None

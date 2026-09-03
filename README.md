@@ -70,9 +70,10 @@ predicates that decide when the work is actually done.
 ### What v0.1 does not do
 
 Named, so nobody has to discover it: no MCP servers, no sub-agents or handoffs,
-no memory, no streaming, no async, no registry server, and no adapters for other
-frameworks — a Teacup Run package runs on Teacup Run's own loop. The package
-format keeps a `framework:` field so that last one can change without a migration.
+no memory, no streaming, no async, no registry server, and — beyond one
+sandboxed-subprocess backend for `framework: teacup-agent-cli` — no general
+adapter system for other frameworks; a Teacup Run package otherwise runs on
+Teacup Run's own loop. See [`docs/backends.md`](docs/backends.md).
 
 ## Why Teacup Run?
 

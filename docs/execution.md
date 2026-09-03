@@ -205,15 +205,17 @@ expression inside [`Ledger.render`](../src/teacup_run/budget.py#L158).
 | 3 | `Budget.remaining(ledger)` — lift it out of `Ledger.render` | `src/teacup_run/budget.py` |
 | 4 | Make `load_env`'s cwd search skippable; it already takes an explicit path and returns the file it used, which preflight echoes | `src/teacup_run/env.py` |
 | 5 | Config loader: read, defaults, precedence (§4) | `src/teacup_run/config.py` *(new)* |
-| 6 | Delete the unused `entrypoint` field from `AgentSpec` | `src/teacup_run/manifest.py` |
+| 6 | ~~Delete the unused `entrypoint` field~~ — **superseded**: kept and repurposed as the base command for a non-native framework backend (`framework != "teacup"`). See `docs/backends.md` and `src/teacup_run/external_cli.py` | `src/teacup_run/manifest.py` |
 | 7 | `cli.py`: arg parsing, preflight, run, render, exit codes, `--json` | `src/teacup_run/cli.py` *(new)* |
 | 8 | `[project.scripts] teacup = "teacup_run.cli:main"` | `pyproject.toml` |
 | 9 | `.env.example` with the variable names, no values | repository root |
 | 10 | Tests: preflight failures, exit codes, JSON shape, `--dry-run` | `tests/test_cli.py` *(new)* |
 
-Items 1–6 are small and independently useful; item 7 is the bulk. Item 6 costs
-nothing in compatibility — `AgentSpec.to_dict` returns `dict(self.raw)`, so an
-`entrypoint:` key in an existing `agent.yaml` still round-trips through publish.
+Items 1–5 are small and independently useful; item 7 is the bulk. Item 6's original
+plan assumed `entrypoint` was dead weight — it wasn't; it's now the one field a
+non-native framework needs to say how it's invoked. `AgentSpec.to_dict` returning
+`dict(self.raw)` already meant an `entrypoint:` key round-tripped through publish
+either way, so nothing here changes that guarantee.
 
 Tests use the existing `model_fn` seam, so the CLI suite runs with no key and no
 spend, like the rest of the suite.
