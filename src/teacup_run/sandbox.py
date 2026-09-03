@@ -1,11 +1,16 @@
 """Cross-platform subprocess sandbox: launch, bound, and tear down an external
 agent process.
 
-This is not filesystem isolation. The launched command typically needs its own
-real project directory to run in — `uv run`, a package's own config file, its
-`skills/` — so this module never assumes the child's cwd is disposable; callers
-that need an absolute-path invocation (external_cli.py does) arrange that
-themselves. What this actually bounds:
+This is not filesystem isolation. The caller passes `cwd` explicitly — usually
+the target project's own root, since `uv run --project <dir>` does **not**
+change the subprocess's working directory (verified empirically: relative
+paths and any cwd-based defaulting inside the launched program resolve
+against wherever the parent process was, not `--project`'s target). An
+earlier version of this module gave every launch a throwaway scratch
+directory instead, which silently broke anything in the launched program that
+defaults relative to its own cwd — teacup-agent's `read_file`, its `./mcp.json`
+and `./skills` discovery, all of it. `cwd` is required now so that mistake
+can't happen quietly again. What this module actually bounds:
 
 - **Environment.** Only `env_allowlist` plus a minimal base (PATH, HOME and the
   handful of Windows variables an interpreter needs to start) reaches the child —
@@ -26,9 +31,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping, Sequence
 
 __all__ = ["SandboxResult", "run_sandboxed"]
@@ -68,15 +73,15 @@ class SandboxResult:
 def run_sandboxed(
     argv: Sequence[str],
     *,
+    cwd: str | Path,
     env_allowlist: Mapping[str, str] | None = None,
     timeout: float | None = None,
 ) -> SandboxResult:
     """Launch `argv` as a subprocess, with a scoped env and a hard wall-clock ceiling.
 
-    The subprocess's own cwd is a scratch directory this call owns and removes
-    afterwards — it exists only because some process needs *a* cwd, not because
-    it is meant to hold anything. Every path the child needs (a config file, a
-    project root) must be absolute in `argv`.
+    `cwd` is required and not defaulted to a scratch directory — see the module
+    docstring for why a throwaway cwd silently breaks a launched program's own
+    cwd-relative defaults. Pass the target project's root.
     """
     started = time.monotonic()
     env = _child_env(env_allowlist or {})
@@ -88,23 +93,22 @@ def run_sandboxed(
     else:
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
-    with tempfile.TemporaryDirectory(prefix="teacup-run-sandbox-") as scratch:
-        proc = subprocess.Popen(
-            list(argv),
-            cwd=scratch,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            **popen_kwargs,
-        )
-        timed_out = False
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            _kill_tree(proc)
-            stdout, stderr = proc.communicate()  # drain what's left; don't hang here too
+    proc = subprocess.Popen(
+        list(argv),
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **popen_kwargs,
+    )
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_tree(proc)
+        stdout, stderr = proc.communicate()  # drain what's left; don't hang here too
 
     return SandboxResult(
         stdout=stdout,
