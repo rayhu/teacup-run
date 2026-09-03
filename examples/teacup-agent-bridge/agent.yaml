@@ -1,0 +1,40 @@
+# Teacup Run package manifest — but this one is a bridge, not a native package.
+#
+# `framework: teacup-agent-cli` tells AutoAgent.run() to skip its own in-process
+# loop and hand the task to external_cli.run_external() instead, which launches
+# a real teacup-agent checkout as a sandboxed subprocess (sandbox.py). This
+# directory never contains teacup-agent's own code or its own agent.yaml — see
+# docs/backends.md for why the two manifests cannot share a directory (they are
+# both named agent.yaml, with incompatible schemas).
+
+name: teacup-agent-bridge
+version: 0.1.0
+description: Runs a sibling teacup-agent checkout as a sandboxed subprocess.
+
+framework: teacup-agent-cli
+entrypoint: "uv run teacup-agent"
+
+# Informational only for this framework — the model that actually answers is
+# whatever the target teacup-agent checkout is configured to use (its own
+# --model default, or --config agent.yaml if it has one). Required because
+# AgentSpec.load() treats model.primary as mandatory for every manifest.
+model:
+  primary: gpt-5
+
+# prompts/system.md exists only because AgentSpec.validate() requires the file
+# named by `instructions` to be readable — external_cli.py never reads it, since
+# teacup-agent supplies its own instructions internally.
+instructions: prompts/system.md
+
+budget:
+  default_usd: 0.05
+  max_wall_clock_s: 600
+
+environment:
+  required:
+    - OPENAI_API_KEY
+
+# Framework-specific, read via AgentSpec.raw (no manifest.py schema change):
+# where the real teacup-agent checkout lives, relative to this directory.
+teacup_agent:
+  project_root: ../../../teacup-agent

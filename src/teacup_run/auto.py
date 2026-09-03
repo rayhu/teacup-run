@@ -125,14 +125,28 @@ class AutoAgent:
         goal_loop: bool = True,
         artifacts: dict[str, Any] | None = None,
         model_fn: Callable[..., Reply] = call_model,
+        live: bool = True,
     ) -> Result:
-        """Run one task under a budget, retrying while the goal is unmet."""
+        """Run one task under a budget, retrying while the goal is unmet.
+
+        `framework: "teacup"` (the default) runs Teacup Run's own loop, below.
+        Any other framework hands off to that framework's backend instead — the
+        only one that exists is `external_cli.run_external` for
+        `teacup-agent-cli` — and `goal_loop`/`artifacts`/`model_fn` (native-loop
+        concepts) do not apply there; `live` does not apply here.
+        """
+        resolved_budget = Budget.of(budget) if budget is not None else (self.budget or Budget())
+        if self.spec.framework != "teacup":
+            from .external_cli import run_external
+
+            return run_external(self.spec, task, budget=resolved_budget.usd, live=live)
+
         return run(
             task,
             model=self.model or self.spec.model_primary,
             instructions=self.instructions(),
             tools=self.tools,
-            budget=Budget.of(budget) if budget is not None else (self.budget or Budget()),
+            budget=resolved_budget,
             checks=self.checks,
             goal_checks=self.spec.goal_checks if goal_loop else (),
             goal_description=self.spec.goal_description,
