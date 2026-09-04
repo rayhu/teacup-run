@@ -79,6 +79,7 @@ def run_coding_task(
     base_branch: str = "main",
     budget: float | None = None,
     live: bool = True,
+    model: str | None = None,
     timeout: float | None = None,
     run_tests: bool = True,
     test_command: str | None = None,
@@ -86,6 +87,13 @@ def run_coding_task(
 ) -> CodingTaskResult:
     """Run `task` against a disposable worktree of `target_repo`, on a new
     branch off `base_branch`, and report what changed.
+
+    `model`: passed straight through as teacup-agent's own `--model` (only
+    meaningful with `live=True` — teacup-agent's offline demo ignores it);
+    `None` leaves teacup-agent's own default (`gpt-5`) in place. A coding
+    task is exactly the kind of run where the caller cares which model does
+    the editing — unlike `run_external`'s plain pass-through use, this isn't
+    left to whatever the target checkout happens to default to.
 
     `run_tests`/`test_command`: there is no reliable, language-agnostic way to
     guess "the target repo's own test command", so `run_tests=True` with no
@@ -112,6 +120,10 @@ def run_coding_task(
         shutil.rmtree(scratch, ignore_errors=True)
         raise
 
+    extra_flags = ("--coding-tools", "--approve", "hooks")
+    if model:
+        extra_flags += ("--model", model)
+
     result = run_external(
         spec,
         task,
@@ -119,7 +131,7 @@ def run_coding_task(
         live=live,
         timeout=timeout,
         target_repo=worktree_path,
-        extra_flags=("--coding-tools", "--approve", "hooks"),
+        extra_flags=extra_flags,
     )
 
     files_changed, diff_stat, commits_made = _collect_diff(worktree_path, base_branch)

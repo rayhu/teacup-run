@@ -162,6 +162,13 @@ question about it, without ever touching that repo's primary checkout:
   No `hooks.py` in the target repo means every gated call is denied without a
   TTY, exactly as it should be — a coding task producing no side effects on an
   un-configured repo is the correct outcome, not a bug.
+- **`model` is a real parameter, not left to whatever the target checkout
+  defaults to.** Passed straight through as teacup-agent's own `--model`
+  (appended to `extra_flags`), since a coding task is exactly the kind of run
+  where the caller cares which model does the editing — unlike
+  `run_external`'s plain pass-through use elsewhere, where the target
+  checkout's own default is usually fine. `None` (the default) leaves
+  teacup-agent's own default (`gpt-5`) in place.
 - **What changed is always reported, committed or not.** teacup-agent's own
   coding tools (`list_files`/`edit_file`/`write_file`/`run_command`) never
   commit anything themselves, but the model can `git commit` via

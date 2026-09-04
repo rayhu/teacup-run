@@ -32,6 +32,7 @@ def main() -> int:
     # teacup-agent's own test suite's job); it only needs to not crash on them.
     p.add_argument("--coding-tools", action="store_true")
     p.add_argument("--approve", default="auto")
+    p.add_argument("--model", default=None)
     p.add_argument("--sleep", type=float, default=0.0, help="test-only: simulate a hung run")
     p.add_argument("--echo-env", default=None, help="test-only: print one env var to stderr")
     args = p.parse_args()

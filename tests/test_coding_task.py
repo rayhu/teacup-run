@@ -143,6 +143,38 @@ def test_run_coding_task_always_requests_coding_tools_and_hooks_approval(tmp_pat
     assert captured["target_repo"] == task_result.worktree_path  # operates on the worktree, not target_repo
 
 
+def test_run_coding_task_passes_model_through_as_an_extra_flag(tmp_path, target_repo, monkeypatch):
+    captured = {}
+    import teacup_run.external_cli as external_cli_mod
+
+    real = external_cli_mod.run_external
+
+    def spy(spec, task, **kwargs):
+        captured.update(kwargs)
+        return real(spec, task, **kwargs)
+
+    monkeypatch.setattr(external_cli_mod, "run_external", spy)
+    run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False, model="gpt-5-mini")
+
+    assert captured["extra_flags"] == ("--coding-tools", "--approve", "hooks", "--model", "gpt-5-mini")
+
+
+def test_run_coding_task_omits_model_flag_when_not_given(tmp_path, target_repo, monkeypatch):
+    captured = {}
+    import teacup_run.external_cli as external_cli_mod
+
+    real = external_cli_mod.run_external
+
+    def spy(spec, task, **kwargs):
+        captured.update(kwargs)
+        return real(spec, task, **kwargs)
+
+    monkeypatch.setattr(external_cli_mod, "run_external", spy)
+    run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
+
+    assert "--model" not in captured["extra_flags"]
+
+
 # --- diff collection ------------------------------------------------------------
 
 
