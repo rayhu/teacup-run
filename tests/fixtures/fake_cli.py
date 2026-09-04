@@ -26,6 +26,12 @@ def main() -> int:
     p.add_argument("--run-dir", default=None)
     p.add_argument("--memory", default=None)
     p.add_argument("--live", action="store_true")
+    # Accepted so coding_task.py's always-on extra_flags don't 400 against this
+    # fixture — this fake doesn't need to *do* anything with them, since no test
+    # here exercises what --coding-tools/--approve actually gate (that's
+    # teacup-agent's own test suite's job); it only needs to not crash on them.
+    p.add_argument("--coding-tools", action="store_true")
+    p.add_argument("--approve", default="auto")
     p.add_argument("--sleep", type=float, default=0.0, help="test-only: simulate a hung run")
     p.add_argument("--echo-env", default=None, help="test-only: print one env var to stderr")
     args = p.parse_args()

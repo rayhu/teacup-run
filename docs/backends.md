@@ -131,6 +131,63 @@ checkout's own defaults are (or a `--live` run picks up its own `mcp.json`/
 `skills/` the same way a human invocation would). Threading those through is a
 natural next step, not done in this round.
 
+## Coding tasks: `coding_task.py` (Phase 3)
+
+`run_external` proved the plumbing — one task string in, one JSON answer out.
+`coding_task.run_coding_task(spec, task, *, target_repo, ...)` is the layer on
+top that actually lets teacup-agent **change** a repo, not just answer a
+question about it, without ever touching that repo's primary checkout:
+
+- **Every task gets its own disposable `git worktree` + branch**, cut from
+  `base_branch` (default `"main"`) inside `target_repo`. A bad run costs
+  "delete a worktree," never "recover a working tree someone else is using" —
+  the load-bearing decision this whole engagement made before writing any of
+  Phase 0–2.
+- **`target_repo` decouples "what the agent operates on" from `project_root`.**
+  `run_external` already conflated the two — `project_root` (where teacup-
+  agent's own code/deps live, for `uv run --project`) happened to always equal
+  the sandbox `cwd` (what gets operated on). `run_external` now takes an
+  optional `target_repo` that becomes `cwd` instead, defaulting to
+  `project_root` so a plain call is unaffected. `coding_task.py` always passes
+  the worktree path, so the same teacup-agent checkout — and the same bridge
+  package — can drive a task against **any** target repo (teacup-run's own
+  source, say), not only wherever `project_root` points.
+- **`--coding-tools --approve hooks` are always added** (`extra_flags` on
+  `run_external`) — a coding task with neither would only ever produce an
+  answer, never a change. `--hooks` is deliberately *not* passed explicitly:
+  teacup-agent's CLI auto-discovers `./hooks.py` relative to its cwd, which is
+  now the worktree, so a target repo's own committed `hooks.py` (if it has
+  one — teacup-agent's or teacup-run's own, once Phase 4 ships one in each) is
+  checked out into the worktree by `git worktree add` and picked up for free.
+  No `hooks.py` in the target repo means every gated call is denied without a
+  TTY, exactly as it should be — a coding task producing no side effects on an
+  un-configured repo is the correct outcome, not a bug.
+- **What changed is always reported, committed or not.** teacup-agent's own
+  coding tools (`list_files`/`edit_file`/`write_file`/`run_command`) never
+  commit anything themselves, but the model can `git commit` via
+  `run_command` if a target repo's `hooks.py` allows it — so `_collect_diff`
+  reports both: uncommitted changes (`git status --porcelain`, tracked and
+  untracked) and commits made on the branch (`git log base_branch..HEAD`).
+  `CodingTaskResult.diff_stat` is the human-readable summary of both;
+  `files_changed` is the flat list a caller can act on.
+- **A target repo's own tests are opt-in, on purpose left unguessed.** There
+  is no reliable, language-agnostic way to infer "the test command" from a
+  repo alone, so `run_tests=True` with no `test_command` is a deliberate
+  no-op (`tests_passed=None`) rather than a guess dressed up as a result.
+  Passing `test_command="uv run pytest"` (or whatever the target repo uses)
+  runs it inside the worktree through `sandbox.run_sandboxed` — the same
+  real, cross-platform process-tree-kill-on-timeout mechanism `run_external`
+  itself uses, not a second, weaker implementation.
+- **Never commits on the caller's behalf, never pushes, never opens a PR.**
+  `coding_task.py` has no code path that does any of the three. It stops at
+  "a reviewable local branch, with a diff and a test result attached" — the
+  same human-gated stopping point every round of this engagement has used by
+  hand, now built into the module itself rather than a habit to remember.
+- **The worktree is left in place, not cleaned up.** It's the reviewable
+  artifact — `CodingTaskResult.worktree_path` is where a human looks. Cleanup
+  (`git worktree remove`) is the caller's job once a branch has been reviewed
+  and either kept or discarded.
+
 ## What's deferred
 
 - An A2A-based backend, for the different job A2A is actually for (see above).
@@ -140,3 +197,9 @@ natural next step, not done in this round.
 - Teacup Run's own `teacup run <ref> <task>` CLI (`docs/execution.md`) — this
   backend only needed `AutoAgent.run()` to dispatch correctly; a user-facing
   CLI on top is separate, larger, already-scoped work.
+- Automatic worktree cleanup, and any notion of "coding task queue" beyond
+  one call, one worktree, one task — concurrent coding tasks are out of
+  scope (teacup-agent's own tool registry is process-global, the same
+  limitation already documented for its A2A server).
+- Auto-push / auto-PR from inside `coding_task.py` — stays human-gated,
+  matching every round so far, not a missing feature.
