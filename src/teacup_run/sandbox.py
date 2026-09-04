@@ -21,6 +21,14 @@ can't happen quietly again. What this module actually bounds:
 - **Resources**, best-effort, POSIX only: an address-space cap via
   `resource.setrlimit`. Windows has no stdlib equivalent, and `SandboxResult`
   says so explicitly (`limits_applied`) rather than silently claiming parity.
+  "Best-effort" is not decorative: confirmed live on macOS, `setrlimit(RLIMIT_AS,
+  ...)` can fail outright — a typical Python process's own virtual address space
+  is already well past a 1 GiB cap before this even runs (macOS accounts for it
+  very differently than Linux). `_preexec_limits` swallows that failure rather
+  than letting it kill the whole launch; an earlier version did not, and a
+  `preexec_fn` exception surfaces to the caller as an opaque
+  `subprocess.SubprocessError: Exception occurred in preexec_fn.` with no
+  indication a resource limit — not the launch itself — was the actual problem.
 
 Deliberately out of scope for this version: network egress control. That needs a
 container or an OS firewall rule, and this backend is aimed at "run a subprocess
@@ -129,10 +137,25 @@ def _child_env(env_allowlist: Mapping[str, str]) -> dict[str, str]:
 def _preexec_limits() -> None:
     """POSIX-only, wired in as `preexec_fn` — never called on Windows, so the
     import of a POSIX-only stdlib module is deferred to here rather than the
-    module top, where it would break the import on Windows entirely."""
+    module top, where it would break the import on Windows entirely.
+
+    Must never raise: this runs in the forked child, between fork() and exec(),
+    and subprocess.Popen has no tolerance for a preexec_fn failure — an
+    exception here aborts the entire launch with an opaque
+    `SubprocessError: Exception occurred in preexec_fn.`, not a "your program
+    ran, just unbounded" fallback. Confirmed live on macOS: `setrlimit` itself
+    can raise here, since a typical Python process's own virtual address space
+    already exceeds a 1 GiB cap by the time this runs (macOS's VA accounting
+    differs sharply from Linux's). Swallowing that failure is what makes
+    "best-effort" in the module docstring actually true, instead of a resource
+    cap silently becoming a hard requirement to launch anything at all.
+    """
     import resource
 
-    resource.setrlimit(resource.RLIMIT_AS, (_MEMORY_LIMIT_BYTES, _MEMORY_LIMIT_BYTES))
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (_MEMORY_LIMIT_BYTES, _MEMORY_LIMIT_BYTES))
+    except (ValueError, OSError):
+        pass
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:

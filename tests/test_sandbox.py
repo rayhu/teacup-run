@@ -57,6 +57,29 @@ def test_timeout_kills_a_hung_process(tmp_path):
     assert result.elapsed_s < 3
 
 
+def test_memory_limit_failure_does_not_abort_the_launch(tmp_path, monkeypatch):
+    """Regression test: confirmed live on macOS, resource.setrlimit(RLIMIT_AS, ...)
+    can raise (a Python process's own virtual address space is often already past
+    the 1 GiB cap before this even runs — macOS accounts for it very differently
+    than Linux). preexec_fn has zero tolerance for a raised exception: an earlier
+    version of _preexec_limits let it propagate, which killed the entire launch
+    with an opaque `SubprocessError: Exception occurred in preexec_fn.` instead of
+    the resource cap silently going unenforced, as "best-effort" is supposed to
+    mean. Forces the same failure via a real fork/preexec_fn/exec, not a mock of
+    subprocess, matching this file's own convention.
+    """
+    import resource
+
+    def _raise(*args, **kwargs):
+        raise OSError("simulated: setrlimit not honored on this platform")
+
+    monkeypatch.setattr(resource, "setrlimit", _raise)
+    result = run_sandboxed(_argv(), cwd=tmp_path, timeout=10)
+    assert result.returncode == 0
+    assert not result.timed_out
+    assert '"status": "done"' in result.stdout
+
+
 def test_cwd_is_honored_not_a_throwaway_scratch_directory(tmp_path):
     """Regression test: an earlier version of this module gave every launch a
     throwaway scratch cwd, which silently broke anything the launched program
