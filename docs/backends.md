@@ -56,13 +56,20 @@ backend shells out to (default: `"uv run teacup-agent"`).
 
 teacup-agent's own CLI resolves `--mcp`/`--skills`/`--memory` defaults (and would
 resolve `--config`) relative to its process's cwd. Changing that cwd to a
-throwaway scratch directory would break all of it. `uv run --project <root>`
-solves this the right way: it runs a command against a given project without
-changing the *caller's* cwd, so `sandbox.py`'s own scratch directory (which
-exists only because some process needs *a* cwd) never has to matter to
-teacup-agent at all. `external_cli.py`'s `_build_argv` inserts `--project`
-right after a `uv run ...`-shaped entrypoint; a future non-`uv` framework would
-need its own insertion rule.
+throwaway scratch directory would break all of it. An earlier version of this
+backend assumed `uv run --project <root>` handled this — it does not:
+verified empirically that `--project` only affects dependency/venv resolution,
+not the subprocess's working directory, so a launch with no explicit `cwd`
+left teacup-agent's `read_file`, `./mcp.json` and `./skills` discovery
+resolving against `sandbox.py`'s own scratch directory instead of the real
+project, silently. `run_sandboxed()` now takes a **required** `cwd` keyword-
+only parameter instead — `external_cli.py` passes the target project's real
+root explicitly, so there is no implicit fallback left to get wrong.
+`external_cli.py`'s `_build_argv` still inserts `--project` right after a
+`uv run ...`-shaped entrypoint (it's still needed for dependency/venv
+resolution), but `cwd` is what actually fixes what a launched program sees
+when it resolves a relative path; a future non-`uv` framework would still
+need `cwd` set correctly, `--project` insertion or not.
 
 `--run-dir` and `--memory` are still pointed at teacup-run's own scratch
 directory, not the target checkout — otherwise concurrent invocations would

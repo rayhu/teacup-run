@@ -16,13 +16,16 @@ without spending money. The plain-flags path keeps `--live` optional, so a
 hermetic test (and a `live=False` call here) gets teacup-agent's free, instant,
 scripted offline demo instead — see docs/backends.md.
 
-Why `uv run --project <root>`, not `cwd=<root>`: teacup-agent's own CLI resolves
-`--mcp`/`--skills`/`--memory` defaults, and would resolve `--config`, relative to
-the process's cwd, and that needs to *stay* its real project directory (see
-docs/backends.md on why the sandbox doesn't chdir into it). `uv run --project`
-runs a command against a given project without changing the caller's own cwd, so
-sandbox.py's throwaway scratch cwd never has to matter to teacup-agent at all —
-every path handed to the child here is absolute.
+Why both `uv run --project <root>` **and** `cwd=<root>`: `--project` alone
+only tells `uv` where to find `pyproject.toml`/the venv — it does **not**
+change the subprocess's actual working directory (verified empirically; see
+sandbox.py's module docstring). teacup-agent's own CLI resolves
+`--mcp`/`--skills` defaults and `read_file`'s root against its real OS-level
+cwd, so `sandbox.run_sandboxed` is called with `cwd=project_root` explicitly
+— an earlier version of this file relied on `--project` alone and shipped
+with those defaults silently resolving against an empty scratch directory
+instead. `--run-dir`/`--memory` stay absolute paths into teacup-run's own
+scratch space regardless, so run artifacts never land in the target project.
 
 Current limitation, stated rather than hidden: `_build_argv` only knows how to
 insert `--project` after a `uv run ...`-shaped entrypoint. A future framework
@@ -84,7 +87,9 @@ def run_external(
             run_dir=scratch_dir / "runs",
             memory_path=scratch_dir / "memory.json",
         )
-        result = run_sandboxed(argv, env_allowlist=env_allowlist, timeout=deadline_s + _GRACE_S)
+        result = run_sandboxed(
+            argv, cwd=project_root, env_allowlist=env_allowlist, timeout=deadline_s + _GRACE_S
+        )
 
     ledger = Ledger()
     ledger.stop_clock()
