@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -90,14 +91,26 @@ def run_coding_task(
     guess "the target repo's own test command", so `run_tests=True` with no
     `test_command` is a deliberate no-op (`tests_passed=None`) rather than a
     guess dressed up as a result — pass the command explicitly to actually run
-    it (e.g. `test_command="uv run pytest"`).
+    it (e.g. `test_command="uv run pytest"`). `test_command` is split with
+    `shlex.split` and run **without a shell** (same reason `sandbox.py` never
+    passes `shell=True`) — a single command only, no `&&`/`;`/pipes/env-var
+    prefixes. Wrap it yourself (`test_command='bash -c "make check && make
+    test"'`) if you need shell features.
     """
     from .external_cli import run_external  # local import: avoid a cycle at module load
 
     branch = _branch_name(task)
     scratch = Path(tempfile.mkdtemp(prefix="teacup-run-worktree-"))
     worktree_path = scratch / "worktree"
-    _create_worktree(target_repo, worktree_path, branch=branch, base_branch=base_branch)
+    try:
+        _create_worktree(target_repo, worktree_path, branch=branch, base_branch=base_branch)
+    except Exception:
+        # _create_worktree can fail before anything exists under `scratch` (a bad
+        # target_repo/base_branch) — mkdtemp() itself isn't a context manager, so
+        # nothing else removes it, and every failed call would otherwise leak one
+        # empty directory forever.
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
 
     result = run_external(
         spec,
@@ -196,7 +209,16 @@ def _collect_diff(worktree_path: Path, base_branch: str) -> tuple[tuple[str, ...
 
 
 def _run_tests(worktree_path: Path, test_command: str, test_timeout: float) -> tuple[bool, str]:
-    sandbox_result = run_sandboxed(shlex.split(test_command), cwd=worktree_path, timeout=test_timeout)
+    """Never raises: a bad test_command (typo'd binary, wrong PATH assumption) is a
+    plausible, caller-supplied value, not a coding_task.py bug — the coding agent
+    has already run by the time this executes, so letting subprocess.Popen's
+    FileNotFoundError/OSError propagate would discard a real, already-produced
+    CodingTaskResult (branch, worktree, diff, answer) over an unrelated test-runner
+    mistake. Reported as a failed test run instead, same as a real test failure."""
+    try:
+        sandbox_result = run_sandboxed(shlex.split(test_command), cwd=worktree_path, timeout=test_timeout)
+    except OSError as exc:
+        return False, f"ERROR: could not run test_command {test_command!r}: {exc}"
     if sandbox_result.timed_out:
         return False, f"ERROR: test command timed out after {test_timeout:g}s: {test_command!r}"
     output = sandbox_result.stdout

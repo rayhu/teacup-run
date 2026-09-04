@@ -177,7 +177,13 @@ question about it, without ever touching that repo's primary checkout:
   Passing `test_command="uv run pytest"` (or whatever the target repo uses)
   runs it inside the worktree through `sandbox.run_sandboxed` — the same
   real, cross-platform process-tree-kill-on-timeout mechanism `run_external`
-  itself uses, not a second, weaker implementation.
+  itself uses, not a second, weaker implementation. It is `shlex.split` and
+  run **without a shell** — one command, no `&&`/`;`/pipes/env-var prefixes
+  (wrap it yourself, `test_command='bash -c "make check && make test"'`, if
+  you need those) — and a command whose executable doesn't exist reports as
+  a failed test run (`tests_passed=False`, an `ERROR:` in `test_output`)
+  rather than crashing `run_coding_task` and discarding an already-produced
+  result over an unrelated test-runner typo.
 - **Never commits on the caller's behalf, never pushes, never opens a PR.**
   `coding_task.py` has no code path that does any of the three. It stops at
   "a reviewable local branch, with a diff and a test result attached" — the

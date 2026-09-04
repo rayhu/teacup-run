@@ -217,6 +217,26 @@ def test_run_coding_task_runs_the_test_command_and_reports_failure(tmp_path, tar
     assert task_result.tests_passed is False
 
 
+def test_run_coding_task_reports_test_failure_when_test_command_executable_is_missing(tmp_path, target_repo):
+    """Regression test (found by independent review): a bad test_command used to
+    raise FileNotFoundError straight out of subprocess.Popen and crash the whole
+    function, discarding an already-successful coding-task result (branch, diff,
+    answer) over an unrelated test-runner typo. It must degrade to a reported
+    test failure instead, the same as a real test failure would."""
+    task_result = run_coding_task(
+        _spec(tmp_path),
+        "t",
+        target_repo=target_repo,
+        live=False,
+        test_command="definitely-not-a-real-binary-xyz",
+    )
+    assert task_result.tests_passed is False
+    assert "could not run test_command" in task_result.test_output
+    # the rest of the result must survive — this is the whole point of the fix
+    assert task_result.result.answer == "echo: t"
+    assert task_result.worktree_path.is_dir()
+
+
 def test_run_coding_task_skips_tests_when_no_test_command_given(tmp_path, target_repo):
     """A deliberate no-op, not a guess: there is no reliable way to infer a target
     repo's own test command, so run_tests=True with no test_command is None, not
@@ -236,3 +256,59 @@ def test_run_coding_task_skips_tests_when_run_tests_is_false_even_with_a_command
         test_command=f"{sys.executable} -c \"import sys; sys.exit(1)\"",
     )
     assert task_result.tests_passed is None
+
+
+# --- failure cleanup and isolation ----------------------------------------------
+
+
+def test_run_coding_task_cleans_up_its_scratch_dir_when_worktree_creation_fails(tmp_path, target_repo, monkeypatch):
+    """Regression test (found by independent review): tempfile.mkdtemp() runs
+    before _create_worktree validates anything, and isn't a context manager — a
+    bad base_branch used to leak that directory forever on every failed call."""
+    import teacup_run.coding_task as coding_task_mod
+
+    created = {}
+    real_mkdtemp = coding_task_mod.tempfile.mkdtemp
+
+    def spy_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        created["scratch"] = Path(path)
+        return path
+
+    monkeypatch.setattr(coding_task_mod.tempfile, "mkdtemp", spy_mkdtemp)
+
+    with pytest.raises(CodingTaskError):
+        run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, base_branch="no-such-branch", live=False)
+
+    assert "scratch" in created
+    assert not created["scratch"].exists()
+
+
+def test_run_coding_tasks_worktree_reflects_only_the_last_commit_not_dirty_changes_in_target(
+    tmp_path, target_repo
+):
+    """A pre-existing uncommitted change in target_repo's own working tree must not
+    leak into the worktree — git worktree add checks out base_branch's last commit,
+    not whatever happens to be sitting dirty in the primary checkout."""
+    (target_repo / "README.md").write_text("dirty, uncommitted change\n", encoding="utf-8")
+
+    task_result = run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
+
+    checked_out = (task_result.worktree_path / "README.md").read_text(encoding="utf-8")
+    assert checked_out == "hello\n"  # the committed content, not target_repo's dirty edit
+
+
+def test_collect_diff_reports_a_committed_rename_correctly(tmp_path, target_repo):
+    """Committed renames resolve to the new path via `git diff --name-only`, unlike
+    the known, documented limitation for an uncommitted rename (see the comment in
+    _collect_diff) — this pins the case that does work correctly."""
+    worktree = tmp_path / "wt"
+    _create_worktree(target_repo, worktree, branch="teacup-run/rename1", base_branch="main")
+    (worktree / "README.md").rename(worktree / "RENAMED.md")
+    _git(["add", "-A"], cwd=worktree)
+    _git(["commit", "-m", "rename"], cwd=worktree)
+
+    files_changed, diff_stat, commits_made = _collect_diff(worktree, "main")
+
+    assert "RENAMED.md" in files_changed
+    assert commits_made == 1
