@@ -15,6 +15,16 @@ can't happen quietly again. What this module actually bounds:
 - **Environment.** Only `env_allowlist` plus a minimal base (PATH, HOME and the
   handful of Windows variables an interpreter needs to start) reaches the child —
   no ambient credential leakage from the caller's own shell.
+- **Standard input.** `stdin=DEVNULL`, always — the child never inherits the
+  caller's own stdin. This is not cosmetic: confirmed live, launching from a
+  real terminal without this, the child inherits that terminal's TTY, and a
+  downstream `input()` call (teacup-agent's own approval prompt, when a hook
+  has no opinion on a call and falls back to "ask a human") sees a real TTY
+  and blocks waiting for a keystroke nobody watching this unattended launch
+  can ever supply — the process hangs until this module's own hard `timeout`
+  finally kills it, which reads as "the task is just slow," not "it's stuck
+  asking a question into a void." Unattended must mean unattended at the OS
+  level, not just "nobody happens to answer."
 - **Lifetime.** A wall-clock `timeout`, enforced with a full process-tree kill, not
   just the top process — `uv run` spawns a child, and a plain `Popen.kill()` would
   leave that child running past the deadline it was meant to enforce.
@@ -105,6 +115,7 @@ def run_sandboxed(
         list(argv),
         cwd=str(cwd),
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
