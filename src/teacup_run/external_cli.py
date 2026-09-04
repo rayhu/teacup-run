@@ -31,6 +31,16 @@ Current limitation, stated rather than hidden: `_build_argv` only knows how to
 insert `--project` after a `uv run ...`-shaped entrypoint. A future framework
 whose entrypoint isn't `uv run`-based would need its own insertion rule — not
 needed yet, since `teacup-agent-cli` is the only backend that exists.
+
+`target_repo` (Phase 3, `coding_task.py`) decouples two things this module used
+to conflate: `project_root` is where *teacup-agent's own code and deps* live —
+`uv run --project` needs it to find `pyproject.toml`/the venv, and it never
+changes. `target_repo` is what the launched agent should actually *operate
+on*: the sandbox `cwd`, which `coding_task.py` points at a disposable git
+worktree so the same teacup-agent checkout can be driven against teacup-run's
+own repo, or any other target, not only wherever `project_root` happens to
+point. `target_repo` defaults to `project_root` — plain `run_external()` calls
+(no coding task involved) are unaffected.
 """
 
 from __future__ import annotations
@@ -39,6 +49,7 @@ import json
 import shlex
 import tempfile
 from pathlib import Path
+from typing import Sequence
 
 from .budget import Ledger
 from .env import load_env
@@ -59,14 +70,23 @@ def run_external(
     budget: float | None = None,
     live: bool = True,
     timeout: float | None = None,
+    target_repo: Path | None = None,
+    extra_flags: Sequence[str] = (),
 ) -> Result:
     """Run `spec` (a `framework != "teacup"` package) as a sandboxed subprocess,
     normalizing its output into teacup-run's own `Result`.
 
     `live=False` (offline scripted demo, no network, no cost) is what tests and
     the cross-repo smoke test use; production calls leave it at the default.
+
+    `target_repo`: what the launched process's cwd should be, if different from
+    `project_root` (see the module docstring) — `coding_task.py` is the caller
+    that needs this; a plain call leaves it unset and behaves exactly as before.
+    `extra_flags` are appended to the launched CLI's argv verbatim (e.g.
+    `coding_task.py` passes `--coding-tools --approve hooks`); empty by default.
     """
     project_root = _project_root(spec)
+    cwd = target_repo if target_repo is not None else project_root
     budget_usd = budget if budget is not None else (spec.budget_usd or 0.05)
     deadline_s = timeout if timeout is not None else (spec.budget_max_wall_clock_s or _DEFAULT_DEADLINE_S)
 
@@ -86,9 +106,10 @@ def run_external(
             live=live,
             run_dir=scratch_dir / "runs",
             memory_path=scratch_dir / "memory.json",
+            extra_flags=extra_flags,
         )
         result = run_sandboxed(
-            argv, cwd=project_root, env_allowlist=env_allowlist, timeout=deadline_s + _GRACE_S
+            argv, cwd=cwd, env_allowlist=env_allowlist, timeout=deadline_s + _GRACE_S
         )
 
     ledger = Ledger()
@@ -166,6 +187,7 @@ def _build_argv(
     live: bool,
     run_dir: Path,
     memory_path: Path,
+    extra_flags: Sequence[str] = (),
 ) -> list[str]:
     argv = shlex.split(entrypoint)
     if argv[:2] == ["uv", "run"]:
@@ -184,6 +206,7 @@ def _build_argv(
     ]
     if live:
         argv.append("--live")
+    argv += list(extra_flags)
     return argv
 
 
