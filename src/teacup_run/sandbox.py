@@ -15,12 +15,30 @@ can't happen quietly again. What this module actually bounds:
 - **Environment.** Only `env_allowlist` plus a minimal base (PATH, HOME and the
   handful of Windows variables an interpreter needs to start) reaches the child —
   no ambient credential leakage from the caller's own shell.
+- **Standard input.** `stdin=DEVNULL`, always — the child never inherits the
+  caller's own stdin. This is not cosmetic: confirmed live, launching from a
+  real terminal without this, the child inherits that terminal's TTY, and a
+  downstream `input()` call (teacup-agent's own approval prompt, when a hook
+  has no opinion on a call and falls back to "ask a human") sees a real TTY
+  and blocks waiting for a keystroke nobody watching this unattended launch
+  can ever supply — the process hangs until this module's own hard `timeout`
+  finally kills it, which reads as "the task is just slow," not "it's stuck
+  asking a question into a void." Unattended must mean unattended at the OS
+  level, not just "nobody happens to answer."
 - **Lifetime.** A wall-clock `timeout`, enforced with a full process-tree kill, not
   just the top process — `uv run` spawns a child, and a plain `Popen.kill()` would
   leave that child running past the deadline it was meant to enforce.
 - **Resources**, best-effort, POSIX only: an address-space cap via
   `resource.setrlimit`. Windows has no stdlib equivalent, and `SandboxResult`
   says so explicitly (`limits_applied`) rather than silently claiming parity.
+  "Best-effort" is not decorative: confirmed live on macOS, `setrlimit(RLIMIT_AS,
+  ...)` can fail outright — a typical Python process's own virtual address space
+  is already well past a 1 GiB cap before this even runs (macOS accounts for it
+  very differently than Linux). `_preexec_limits` swallows that failure rather
+  than letting it kill the whole launch; an earlier version did not, and a
+  `preexec_fn` exception surfaces to the caller as an opaque
+  `subprocess.SubprocessError: Exception occurred in preexec_fn.` with no
+  indication a resource limit — not the launch itself — was the actual problem.
 
 Deliberately out of scope for this version: network egress control. That needs a
 container or an OS firewall rule, and this backend is aimed at "run a subprocess
@@ -97,6 +115,7 @@ def run_sandboxed(
         list(argv),
         cwd=str(cwd),
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -129,10 +148,25 @@ def _child_env(env_allowlist: Mapping[str, str]) -> dict[str, str]:
 def _preexec_limits() -> None:
     """POSIX-only, wired in as `preexec_fn` — never called on Windows, so the
     import of a POSIX-only stdlib module is deferred to here rather than the
-    module top, where it would break the import on Windows entirely."""
+    module top, where it would break the import on Windows entirely.
+
+    Must never raise: this runs in the forked child, between fork() and exec(),
+    and subprocess.Popen has no tolerance for a preexec_fn failure — an
+    exception here aborts the entire launch with an opaque
+    `SubprocessError: Exception occurred in preexec_fn.`, not a "your program
+    ran, just unbounded" fallback. Confirmed live on macOS: `setrlimit` itself
+    can raise here, since a typical Python process's own virtual address space
+    already exceeds a 1 GiB cap by the time this runs (macOS's VA accounting
+    differs sharply from Linux's). Swallowing that failure is what makes
+    "best-effort" in the module docstring actually true, instead of a resource
+    cap silently becoming a hard requirement to launch anything at all.
+    """
     import resource
 
-    resource.setrlimit(resource.RLIMIT_AS, (_MEMORY_LIMIT_BYTES, _MEMORY_LIMIT_BYTES))
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (_MEMORY_LIMIT_BYTES, _MEMORY_LIMIT_BYTES))
+    except (ValueError, OSError):
+        pass
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
