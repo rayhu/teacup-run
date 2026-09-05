@@ -80,6 +80,7 @@ def run_coding_task(
     budget: float | None = None,
     live: bool = True,
     model: str | None = None,
+    max_steps: int | None = None,
     timeout: float | None = None,
     run_tests: bool = True,
     test_command: str | None = None,
@@ -94,6 +95,15 @@ def run_coding_task(
     task is exactly the kind of run where the caller cares which model does
     the editing — unlike `run_external`'s plain pass-through use, this isn't
     left to whatever the target checkout happens to default to.
+
+    `max_steps`: passed straight through as teacup-agent's own `--max-steps`;
+    `None` leaves its own default (8) in place. Confirmed live: a task that
+    reads one large file for context before editing (teacup-agent's own
+    docs/roadmap.md, at 1800+ lines) can burn most of an 8-step budget just
+    locating the relevant paragraph, and hit the forced wrap-up before making
+    a single edit — this is a coding task, not a quick lookup, and the
+    default step count was never tuned for "read context, edit N files, add
+    a test, run the suite" in one run.
 
     `run_tests`/`test_command`: there is no reliable, language-agnostic way to
     guess "the target repo's own test command", so `run_tests=True` with no
@@ -123,6 +133,8 @@ def run_coding_task(
     extra_flags = ("--coding-tools", "--approve", "hooks")
     if model:
         extra_flags += ("--model", model)
+    if max_steps is not None:
+        extra_flags += ("--max-steps", str(max_steps))
 
     result = run_external(
         spec,
