@@ -456,6 +456,27 @@ Developers should be able to see:
 
 Agent development can then become cumulative rather than repetitive.
 
+## It Has Already Improved Another Agent
+
+"Open Source First" below asks one metric to matter especially: how often
+someone takes another person's agent, improves it, and publishes the
+improvement. Teacup Run has already done this to
+[teacup-agent](https://github.com/rayhu/teacup-agent) — not as a demo, as a
+real, ongoing arc of `run_coding_task` driving `gpt-5-mini` through
+teacup-agent's own coding tools to fix a real gap in its own source.
+
+It didn't go cleanly. A sandbox that hung for 630 seconds asking a question
+nobody could answer. A model that gave up the moment one tool call was
+denied. A model that reached for a shell command instead of the tool built
+for the job. Every one of those is a real bug this project's own code had,
+found by actually running the thing, fixed as a normal merged pull request —
+not smoothed over in a highlight reel.
+
+[The full log is in teacup-agent's `docs/case-studies.md`](https://github.com/rayhu/teacup-agent/blob/main/docs/case-studies.md),
+updated the moment the next attempt finds something new. The driver behind
+every attempt in it is [`scripts/dogfood_teacup_agent.py`](scripts/dogfood_teacup_agent.py) —
+run it yourself against your own fork of either repo.
+
 ## What Teacup Run Is Not
 
 Teacup Run is **not** initially trying to be:
