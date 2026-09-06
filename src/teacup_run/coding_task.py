@@ -66,6 +66,7 @@ class CodingTaskResult:
     commits_made: int
     tests_passed: bool | None  # None: run_tests=False, or no test_command given
     test_output: str | None
+    agent_artifacts_path: Path | None = None  # the run's own trajectory, for diagnosis
 
     def __str__(self) -> str:
         return self.result.answer
@@ -136,6 +137,27 @@ def run_coding_task(
     if max_steps is not None:
         extra_flags += ("--max-steps", str(max_steps))
 
+    # Inside the worktree, deliberately. teacup-agent externalizes any tool result
+    # over 2000 chars into its --run-dir and leaves the model an excerpt plus the
+    # path to read back; its own read_file refuses paths outside its cwd, so that
+    # path is only usable when the run dir sits under the cwd it is given.
+    #
+    # teacup-agent no longer *breaks* when it isn't (rayhu/teacup-agent#16 makes it
+    # keep the whole result inline rather than hand over a pointer it has forbidden),
+    # so this is now an optimisation rather than a correctness fix: a reachable run
+    # dir lets the excerpt-plus-path bargain work as designed and keeps large reads
+    # out of the context window, instead of falling back to inlining all of them.
+    # Before that fix it was load-bearing — a 12147-char file reached the model as
+    # 864 chars plus an unusable absolute path, and it spent six edit_file calls
+    # guessing at code it had never been shown.
+    #
+    # Safe for _collect_diff because `runs/` is gitignored in the target repo and
+    # `git status --porcelain` skips ignored paths (verified against this repo's
+    # own target). A target repo that does NOT ignore `runs/` would see these
+    # files reported as untracked task output — worth knowing before pointing
+    # coding_task at an arbitrary repo.
+    agent_run_dir = worktree_path / "runs"
+
     result = run_external(
         spec,
         task,
@@ -144,6 +166,7 @@ def run_coding_task(
         timeout=timeout,
         target_repo=worktree_path,
         extra_flags=extra_flags,
+        run_dir=agent_run_dir,
     )
 
     files_changed, diff_stat, commits_made = _collect_diff(worktree_path, base_branch)
@@ -163,6 +186,7 @@ def run_coding_task(
         commits_made=commits_made,
         tests_passed=tests_passed,
         test_output=test_output,
+        agent_artifacts_path=agent_run_dir,
     )
 
 
