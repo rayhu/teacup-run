@@ -24,8 +24,13 @@ sandbox.py's module docstring). teacup-agent's own CLI resolves
 cwd, so `sandbox.run_sandboxed` is called with `cwd=project_root` explicitly
 — an earlier version of this file relied on `--project` alone and shipped
 with those defaults silently resolving against an empty scratch directory
-instead. `--run-dir`/`--memory` stay absolute paths into teacup-run's own
-scratch space regardless, so run artifacts never land in the target project.
+instead. `--memory` stays an absolute path into teacup-run's own scratch
+space. `--run-dir` used to as well, and `coding_task.py` now deliberately points
+it *inside* the worktree instead — see `run_external`'s `run_dir` parameter for
+why the excerpt-plus-path mechanism it feeds only works when the model can reach
+the directory. Artifacts therefore do land in the target checkout for a coding
+task; `coding_task._collect_diff` filters them back out of the reported diff, and
+the worktree they land in is disposable.
 
 Current limitation, stated rather than hidden: `_build_argv` only knows how to
 insert `--project` after a `uv run ...`-shaped entrypoint. A future framework

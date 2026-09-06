@@ -71,9 +71,21 @@ resolution), but `cwd` is what actually fixes what a launched program sees
 when it resolves a relative path; a future non-`uv` framework would still
 need `cwd` set correctly, `--project` insertion or not.
 
-`--run-dir` and `--memory` are still pointed at teacup-run's own scratch
-directory, not the target checkout — otherwise concurrent invocations would
-collide and the checkout would accumulate run artifacts across every call.
+`--memory` is pointed at teacup-run's own scratch directory, not the target
+checkout. `--run-dir` was too, until a coding task showed why it cannot be: the
+launched agent externalizes large tool results into that directory and hands the
+model the path to read back, and teacup-agent's `read_file` refuses paths outside
+the project it was given — so a run dir outside the checkout silently truncated
+every large file the model read and pointed it at an address it was forbidden to
+open. `run_coding_task` now puts it at `.teacup-run/` inside the worktree.
+
+The two objections that kept it outside are still answered, just differently.
+Concurrent invocations do not collide because each coding task gets its own
+worktree, so each gets its own `.teacup-run/`. The checkout does not accumulate
+artifacts across calls because that worktree is disposable — and
+`_collect_diff` filters the directory out of `files_changed`/`diff_stat`
+explicitly, rather than relying on the target repo's `.gitignore`, which is a
+property of that repo and not something this library may assume.
 
 ## What `sandbox.py` actually bounds
 

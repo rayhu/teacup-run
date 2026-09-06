@@ -46,6 +46,10 @@ from .sandbox import run_sandboxed
 
 __all__ = ["CodingTaskError", "CodingTaskResult", "run_coding_task"]
 
+# Where the launched agent's own run artifacts go, relative to the worktree root.
+# Dotted and namespaced so it cannot collide with content a target repo tracks.
+ARTIFACTS_DIRNAME = ".teacup-run"
+
 
 class CodingTaskError(RuntimeError):
     """The worktree/branch setup failed — before teacup-agent ever ran."""
@@ -119,7 +123,13 @@ def run_coding_task(
     from .external_cli import run_external  # local import: avoid a cycle at module load
 
     branch = _branch_name(task)
-    scratch = Path(tempfile.mkdtemp(prefix="teacup-run-worktree-"))
+    # .resolve(): on macOS mkdtemp returns /var/... while the child process reports
+    # cwd as /private/var/..., so teacup-agent's `run_dir.relative_to(cwd)` raises and
+    # it falls back to an absolute pointer. The read-back still worked, but only
+    # because its path guard re-resolves and the symlink happens to normalise it —
+    # an accident of this platform, not the mechanism. Resolve here so the run dir is
+    # genuinely under the cwd the child sees.
+    scratch = Path(tempfile.mkdtemp(prefix="teacup-run-worktree-")).resolve()
     worktree_path = scratch / "worktree"
     try:
         _create_worktree(target_repo, worktree_path, branch=branch, base_branch=base_branch)
@@ -142,32 +152,59 @@ def run_coding_task(
     # path to read back; its own read_file refuses paths outside its cwd, so that
     # path is only usable when the run dir sits under the cwd it is given.
     #
-    # teacup-agent no longer *breaks* when it isn't (rayhu/teacup-agent#16 makes it
-    # keep the whole result inline rather than hand over a pointer it has forbidden),
-    # so this is now an optimisation rather than a correctness fix: a reachable run
-    # dir lets the excerpt-plus-path bargain work as designed and keeps large reads
-    # out of the context window, instead of falling back to inlining all of them.
-    # Before that fix it was load-bearing — a 12147-char file reached the model as
-    # 864 chars plus an unusable absolute path, and it spent six edit_file calls
-    # guessing at code it had never been shown.
+    # This is load-bearing today, not a nicety. Against teacup-agent's current main a
+    # 12147-char file reached the model as 864 chars plus an absolute path its own
+    # read_file refuses, and it spent six edit_file calls guessing at code it had never
+    # been shown. rayhu/teacup-agent#16 proposes an inline fallback for the unreachable
+    # case, which would downgrade this to an optimisation — but that PR is open, not
+    # merged, and `base_branch` above is `main`, so the agent this driver actually
+    # launches is the one without it. Revisit when it lands; do not pre-credit it.
     #
-    # Safe for _collect_diff because `runs/` is gitignored in the target repo and
-    # `git status --porcelain` skips ignored paths (verified against this repo's
-    # own target). A target repo that does NOT ignore `runs/` would see these
-    # files reported as untracked task output — worth knowing before pointing
-    # coding_task at an arbitrary repo.
-    agent_run_dir = worktree_path / "runs"
+    # Two things make putting it there safe, and neither may be dropped:
+    #
+    # The name. Not `runs/`: a target repo is free to already track a directory by
+    # that name (fixtures, data), and writing state.json into it would surface as a
+    # modified *tracked* file on the branch a human is asked to review.
+    #
+    # The filter. _collect_diff drops this prefix explicitly rather than trusting the
+    # target's .gitignore. Relying on the ignore rules was the earlier version of this
+    # code and it was wrong: it held only for teacup-agent, whose .gitignore happens to
+    # carry `runs/`, and this repo's own source is a documented target (docs/backends.md)
+    # whose .gitignore does not — so `files_changed` would have gained a phantom entry
+    # on exactly the target the docs suggest trying first.
+    #
+    # What the filter does NOT do is stop a model from committing the trajectory itself:
+    # state.json holds the system prompt and every tool result, and a target whose
+    # hooks.py approves `git add` and `git commit` as separate calls can put it on the
+    # branch. Nothing here pushes, so this stops at a local branch a human reads — but
+    # it is a real consequence of moving the run dir inside the repo, so it is written
+    # down rather than left to be discovered.
+    agent_run_dir = worktree_path / ARTIFACTS_DIRNAME
 
-    result = run_external(
-        spec,
-        task,
-        budget=budget,
-        live=live,
-        timeout=timeout,
-        target_repo=worktree_path,
-        extra_flags=extra_flags,
-        run_dir=agent_run_dir,
-    )
+    try:
+        result = run_external(
+            spec,
+            task,
+            budget=budget,
+            live=live,
+            timeout=timeout,
+            target_repo=worktree_path,
+            extra_flags=extra_flags,
+            run_dir=agent_run_dir,
+        )
+    except OSError as exc:
+        # run_external creates the run dir before launching anything, and that can fail
+        # on inputs a target repo really has: a plain *file* named .teacup-run at its
+        # root, or a read-only checkout. By this point _create_worktree has already
+        # registered a worktree in the caller's real repository, and the cleanup above
+        # only covers failures during creation — so without this the caller is left with
+        # a stale `git worktree` entry and a scratch directory nobody removes, from what
+        # reads to them as an unrelated OSError.
+        _remove_worktree(target_repo, worktree_path)
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise CodingTaskError(
+            f"could not prepare the agent's run directory at {agent_run_dir}: {exc}"
+        ) from exc
 
     files_changed, diff_stat, commits_made = _collect_diff(worktree_path, base_branch)
 
@@ -190,6 +227,16 @@ def run_coding_task(
     )
 
 
+def _remove_worktree(target_repo: Path, worktree_path: Path) -> None:
+    """Best-effort deregistration, for failure paths only. Never raises: it runs while
+    another error is already on its way up, and masking that error with a git failure
+    would hide the thing the caller actually needs to see."""
+    try:
+        _git(["worktree", "remove", "--force", str(worktree_path)], cwd=target_repo, error="")
+    except Exception:
+        pass
+
+
 def _branch_name(task: str) -> str:
     # A short random suffix, not a timestamp: two calls in the same wall-clock
     # second (a batch of small tasks, or two tests in one process) would otherwise
@@ -210,6 +257,17 @@ def _create_worktree(target_repo: Path, worktree_path: Path, *, branch: str, bas
     )
 
 
+def _is_artifact(path: str) -> bool:
+    """Whether a path git reported is the agent's own run dir rather than task output.
+
+    Git reports a directory (`?? .teacup-run/`) when nothing inside it is tracked and
+    the whole thing is new, and individual paths once any of it is, so both shapes have
+    to match. Quoted paths (`"a b"`) keep their quote, hence the lstrip.
+    """
+    cleaned = path.strip().lstrip('"')
+    return cleaned == ARTIFACTS_DIRNAME or cleaned.startswith(ARTIFACTS_DIRNAME + "/")
+
+
 def _collect_diff(worktree_path: Path, base_branch: str) -> tuple[tuple[str, ...], str, int]:
     """Union of committed (on this branch, since it split from base_branch) and
     uncommitted changes — a coding task's tools don't commit anything themselves
@@ -221,7 +279,9 @@ def _collect_diff(worktree_path: Path, base_branch: str) -> tuple[tuple[str, ...
     # (`M `, `??`, ...). A rename line (`R  old -> new`) isn't split into two paths —
     # acceptable for a first cut, since files_changed is a review aid, not a machine
     # contract; `diff_stat` below carries the real, unambiguous git output either way.
-    uncommitted = [line[3:] for line in status.splitlines() if line.strip()]
+    uncommitted = [
+        line[3:] for line in status.splitlines() if line.strip() and not _is_artifact(line[3:])
+    ]
 
     # base_branch was already validated as a real ref when the worktree was created
     # (it's what the branch was cut from), so this can only come back empty, never fail.
@@ -233,7 +293,9 @@ def _collect_diff(worktree_path: Path, base_branch: str) -> tuple[tuple[str, ...
         diff_names = _git(
             ["diff", "--name-only", f"{base_branch}..HEAD"], cwd=worktree_path, error="git diff failed"
         )
-        committed = [line for line in diff_names.splitlines() if line.strip()]
+        committed = [
+            line for line in diff_names.splitlines() if line.strip() and not _is_artifact(line)
+        ]
 
     files_changed = tuple(sorted(set(uncommitted) | set(committed)))
 
@@ -242,7 +304,11 @@ def _collect_diff(worktree_path: Path, base_branch: str) -> tuple[tuple[str, ...
     # `?? path` but not here at all, so it has to be reported separately or it goes
     # missing from the summary entirely despite being a real, uncommitted change.
     tracked_stat = _git(["diff", "HEAD", "--stat"], cwd=worktree_path, error="git diff --stat failed").strip()
-    untracked = [line[3:] for line in status.splitlines() if line.startswith("??")]
+    untracked = [
+        line[3:]
+        for line in status.splitlines()
+        if line.startswith("??") and not _is_artifact(line[3:])
+    ]
 
     parts = []
     if commits_made:
