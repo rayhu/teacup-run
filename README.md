@@ -320,6 +320,14 @@ agent.add_skill("citation-verification")
 
 A skill may package instructions, examples, tools, workflows, policies, sub-agents, and evaluations.
 
+On disk, a skill is a folder with a `SKILL.md` — the open
+[Agent Skills](https://agentskills.io/specification) format, not something invented
+here. `AgentSpec.skill_meta()` validates `name`/`description` against the spec's own
+constraints and exposes its optional fields (`license`, `compatibility`, `metadata`,
+`allowed-tools`) instead of discarding them — a skill written for any tool that reads
+the same spec (Claude, OpenAI Codex CLI, Microsoft Agent Framework, Cursor, GitHub
+Copilot) loads here unmodified.
+
 Skills should themselves be publishable and reusable.
 
 ```python

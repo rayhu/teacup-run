@@ -142,3 +142,117 @@ def test_the_example_agent_is_a_valid_package(note_taker_path):
     assert spec.name == "teacup/note-taker"
     assert "concise-style" in spec.available_skills()
     assert spec.instructions()
+
+
+# --- Agent Skills spec conformance (skill_meta / available_skills) ------------
+
+
+def _agent_with_skill(tmp_path, skill_name, skill_md_text):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system.md").write_text("do things")
+    skill_dir = tmp_path / "skills" / skill_name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(skill_md_text, encoding="utf-8")
+    return AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+
+
+def test_skill_meta_parses_the_spec_optional_fields(tmp_path):
+    spec = _agent_with_skill(
+        tmp_path,
+        "full-metadata",
+        """---
+name: full-metadata
+description: exercises every optional field the spec defines.
+license: Apache-2.0
+compatibility: requires git and docker
+allowed-tools: read_file run_command
+metadata:
+  author: someone
+---
+
+Body.""",
+    )
+    meta = spec.skill_meta("full-metadata")
+    assert meta.license == "Apache-2.0"
+    assert meta.compatibility == "requires git and docker"
+    assert meta.allowed_tools == ("read_file", "run_command")
+    assert meta.metadata == {"author": "someone"}
+
+
+def test_skill_meta_is_none_without_a_description(tmp_path):
+    spec = _agent_with_skill(tmp_path, "broken", "---\nname: broken\n---\n\nBody.")
+    assert spec.skill_meta("broken") is None
+
+
+def test_a_name_disagreeing_with_its_folder_is_not_available(tmp_path):
+    """Same conformance rule teacup-agent's skills.py applies: name must equal the
+    folder discover() found it under, or the skill answers to two identities."""
+    spec = _agent_with_skill(
+        tmp_path, "the-folder", "---\nname: a-different-name\ndescription: d.\n---\n\nBody."
+    )
+    assert "the-folder" not in spec.available_skills()
+    assert spec.skill_meta("the-folder") is None
+
+
+def test_a_spec_illegal_name_is_not_available(tmp_path):
+    spec = _agent_with_skill(tmp_path, "Bad_Name", "---\nname: Bad_Name\ndescription: d.\n---\n\nBody.")
+    assert "Bad_Name" not in spec.available_skills()
+
+
+def test_a_description_past_the_spec_limit_is_capped(tmp_path):
+    spec = _agent_with_skill(
+        tmp_path, "long-desc", f"---\nname: long-desc\ndescription: {'x' * 2000}\n---\n\nBody."
+    )
+    assert len(spec.skill_meta("long-desc").description) == 1024
+
+
+def test_the_example_agents_skill_has_no_optional_fields_declared(note_taker_path):
+    """The shipped example predates the optional fields; parsing it must not require
+    them, and it should come back with the same empty defaults a bare skill gets."""
+    spec = AgentSpec.load(note_taker_path)
+    meta = spec.skill_meta("concise-style")
+    assert meta.license is None
+    assert meta.metadata == {}
+    assert meta.allowed_tools == ()
+
+
+def test_a_reserved_word_in_the_name_is_not_available(tmp_path):
+    """The spec forbids "claude"/"anthropic" in a skill name — distinct from the
+    folder-match and character-set rules, and previously unenforced here."""
+    spec = _agent_with_skill(
+        tmp_path, "claude-helper", "---\nname: claude-helper\ndescription: d.\n---\n\nBody."
+    )
+    assert "claude-helper" not in spec.available_skills()
+    assert spec.skill_meta("claude-helper") is None
+
+
+def test_a_skill_with_no_body_is_not_available(tmp_path):
+    """Consistent with teacup-agent's own discover(), which already requires a
+    non-empty body: a skill with nothing to load is as unusable as one with no
+    description, and the two repos must agree on that."""
+    spec = _agent_with_skill(tmp_path, "empty-body", "---\nname: empty-body\ndescription: d.\n---\n")
+    assert "empty-body" not in spec.available_skills()
+    assert spec.skill_meta("empty-body") is None
+
+
+def test_validate_distinguishes_a_missing_skill_from_an_invalid_one(tmp_path):
+    """A SKILL.md that exists but fails spec validation must not be reported as "no
+    SKILL.md" — that sends a human looking for a file that is right there."""
+    spec = _agent_with_skill(
+        tmp_path, "the-folder", "---\nname: a-different-name\ndescription: d.\n---\n\nBody."
+    )
+    manifest_text = MINIMAL.replace("tools: [do_thing]", "tools: [do_thing]\nskills: [the-folder]")
+    spec = AgentSpec.load(tmp_path, manifest_text=manifest_text)
+
+    with pytest.raises(ManifestError, match="fails Agent Skills validation"):
+        spec.validate(tools={"do_thing"}, checks={"non_empty"})
+
+
+def test_validate_reports_a_truly_missing_skill_as_such(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system.md").write_text("do things")
+    manifest_text = MINIMAL.replace("tools: [do_thing]", "tools: [do_thing]\nskills: [nowhere]")
+    spec = AgentSpec.load(tmp_path, manifest_text=manifest_text)
+
+    with pytest.raises(ManifestError, match="no SKILL.md: nowhere"):
+        spec.validate(tools={"do_thing"}, checks={"non_empty"})
