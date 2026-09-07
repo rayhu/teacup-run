@@ -233,6 +233,15 @@ those for anything else. That is the price of one layout instead of two.
 An agent with Python dependencies adds a `pyproject.toml` for them. It is not
 what makes the directory an agent; the manifest is.
 
+**An agent's instructions can come from an `AGENTS.md`, not only from `prompts/`.**
+If the package root has one, `AgentSpec.instructions()` uses it as background
+context ahead of the package's own `prompts/system.md` — or, if that file doesn't
+exist at all, `AGENTS.md` alone satisfies the requirement. `AGENTS.md` is the
+open, now Linux-Foundation-governed convention 20+ coding tools already read; a
+directory that already has one from being edited by those tools works as a
+Teacup Run package without writing a second, redundant instructions file on top
+of it.
+
 Conceptually, an agent can define:
 
 - instructions

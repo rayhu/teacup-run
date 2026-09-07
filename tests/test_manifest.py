@@ -88,6 +88,54 @@ def test_frontmatter_round_trip():
     assert parse_frontmatter("no frontmatter") == {}
 
 
+# --- AGENTS.md compatibility ----------------------------------------------------
+
+
+def test_agents_md_is_none_when_absent(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system.md").write_text("do things")
+    spec = AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+    assert spec.agents_md() is None
+
+
+def test_agents_md_is_read_when_present(tmp_path):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system.md").write_text("do things")
+    (tmp_path / "AGENTS.md").write_text("Repo conventions: use uv, not pip.  ")
+    spec = AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+    assert spec.agents_md() == "Repo conventions: use uv, not pip."
+
+
+def test_instructions_combines_agents_md_and_the_packages_own_file(tmp_path):
+    """AGENTS.md is background context; the package's own instructions are the
+    specific, authored persona — both matter, so neither is dropped."""
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system.md").write_text("You are a helpful assistant.")
+    (tmp_path / "AGENTS.md").write_text("Repo conventions: use uv, not pip.")
+    spec = AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+
+    combined = spec.instructions()
+    assert "Repo conventions: use uv, not pip." in combined
+    assert "You are a helpful assistant." in combined
+    # AGENTS.md reads as background, the package's own voice comes after it
+    assert combined.index("Repo conventions") < combined.index("You are a helpful")
+
+
+def test_agents_md_alone_satisfies_instructions_when_the_prompt_file_is_missing(tmp_path):
+    """A directory that only has an AGENTS.md — no prompts/system.md at all — should
+    still work as a Teacup Run package, not fail validation over a file the
+    ecosystem-standard convention already covers."""
+    (tmp_path / "AGENTS.md").write_text("Just use AGENTS.md for everything.")
+    spec = AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+    assert spec.instructions() == "Just use AGENTS.md for everything."
+
+
+def test_missing_both_the_prompt_file_and_agents_md_still_raises(tmp_path):
+    spec = AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+    with pytest.raises(ManifestError, match="prompts/system.md"):
+        spec.instructions()
+
+
 def test_the_example_agent_is_a_valid_package(note_taker_path):
     spec = AgentSpec.load(note_taker_path)
 
