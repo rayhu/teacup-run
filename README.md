@@ -69,11 +69,14 @@ predicates that decide when the work is actually done.
 
 ### What v0.1 does not do
 
-Named, so nobody has to discover it: no MCP servers, no sub-agents or handoffs,
-no memory, no streaming, no async, no registry server, and — beyond one
-sandboxed-subprocess backend for `framework: teacup-agent-cli` — no general
-adapter system for other frameworks; a Teacup Run package otherwise runs on
-Teacup Run's own loop. See [`docs/backends.md`](docs/backends.md).
+Named, so nobody has to discover it: no sub-agents or handoffs, no memory, no
+streaming, no async, no registry server, and — beyond one sandboxed-subprocess
+backend for `framework: teacup-agent-cli` — no general adapter system for other
+frameworks; a Teacup Run package otherwise runs on Teacup Run's own loop. See
+[`docs/backends.md`](docs/backends.md).
+
+(MCP servers are supported — `agent.add_mcp_server(name, spec)`, see "Skills as
+Composable Capabilities" below.)
 
 ## Why Teacup Run?
 
@@ -118,7 +121,7 @@ Agents should be composable.
 ```python
 agent.add_skill("financial-analysis")
 agent.add_skill("pdf-analysis")
-agent.add_tool(my_mcp_server)
+agent.add_mcp_server("fetch", {"command": "uvx", "args": ["mcp-server-fetch"]})
 ```
 
 Or change its underlying components:
@@ -279,6 +282,21 @@ Existing frameworks should become backends, not competitors.
 Agents should be extensible without being rewritten.
 
 A **tool** gives an agent an action it can perform.
+
+A tool can be hand-written with `@tool` in the package's own `tools.py`, or it can
+come from an [MCP](https://modelcontextprotocol.io) server — the open standard for
+this exact problem, so a server built for any other MCP client works here
+unmodified:
+
+```python
+agent.add_mcp_server("fetch", {"command": "uvx", "args": ["mcp-server-fetch"]})
+```
+
+Its tools land namespaced (`fetch__fetch`) and join `agent.tools` like any other.
+Call `agent.close()` once the agent is done with it — the connection is a real
+background thread, not something garbage collection alone tears down. There is no
+approval gate on any tool here yet, MCP-sourced or hand-written; only connect to a
+server you trust to run unattended.
 
 A **skill** gives an agent a reusable capability for accomplishing a class of tasks.
 

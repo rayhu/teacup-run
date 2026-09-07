@@ -44,6 +44,7 @@ class AutoAgent:
     budget: Budget | None = None
     extra_instructions: list[str] = field(default_factory=list)
     enabled_skills: list[str] = field(default_factory=list)
+    _mcp_hub: Any = field(default=None, repr=False, compare=False)
 
     # -- loading -----------------------------------------------------------
 
@@ -98,6 +99,33 @@ class AutoAgent:
     def add_tool(self, new_tool: Tool) -> "AutoAgent":
         self.tools.append(new_tool)
         return self
+
+    def add_mcp_server(self, name: str, spec: dict[str, Any]) -> "AutoAgent":
+        """Connect to an MCP server and add the tools it contributes.
+
+        `spec`: `{"url": ...}` or `{"command": ..., "args": [...], "env": {...}}`,
+        plus an optional `"tools"` allowlist — see `mcp_tools.McpHub.connect()`.
+        Call `close()` once the agent is done with it (or with all of them): the
+        connection is a real background thread and event loop, not something
+        garbage collection alone tears down.
+
+        There is no approval gate to route these tools through — this repo's native
+        loop has none yet, for any tool. Only add a server whose tools you trust to
+        run unattended, the same judgment call adding a hand-written `@tool` already
+        requires.
+        """
+        from .mcp_tools import McpHub
+
+        if self._mcp_hub is None:
+            self._mcp_hub = McpHub()
+        self.tools.extend(self._mcp_hub.connect(name, spec))
+        return self
+
+    def close(self) -> None:
+        """Release any MCP connections this agent opened. A no-op if none were."""
+        if self._mcp_hub is not None:
+            self._mcp_hub.close()
+            self._mcp_hub = None
 
     def set_model(self, model: str) -> "AutoAgent":
         self.model = model
