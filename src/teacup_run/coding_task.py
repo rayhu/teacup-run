@@ -157,13 +157,16 @@ def run_coding_task(
     # path to read back; its own read_file refuses paths outside its cwd, so that
     # path is only usable when the run dir sits under the cwd it is given.
     #
-    # This is load-bearing today, not a nicety. Against teacup-agent's current main a
-    # 12147-char file reached the model as 864 chars plus an absolute path its own
-    # read_file refuses, and it spent six edit_file calls guessing at code it had never
-    # been shown. rayhu/teacup-agent#16 proposes an inline fallback for the unreachable
-    # case, which would downgrade this to an optimisation — but that PR is open, not
-    # merged, and `base_branch` above is `main`, so the agent this driver actually
-    # launches is the one without it. Revisit when it lands; do not pre-credit it.
+    # Why it must be reachable at all: before rayhu/teacup-agent#16, a 12147-char file
+    # reached the model as 864 chars plus an absolute path its own read_file refuses,
+    # and it spent six edit_file calls guessing at code it had never been shown.
+    #
+    # #16 has since landed on teacup-agent's main — which is what `base_branch` above
+    # points at — so an unreachable run dir no longer truncates anything: the agent
+    # keeps the whole result inline instead. That makes this an optimisation rather
+    # than a correctness fix, and a real one: the excerpt-plus-path bargain is what
+    # keeps large reads out of the context window, and the inline fallback sends them
+    # unshrunk. Keep it reachable.
     #
     # Two things make putting it there safe, and neither may be dropped:
     #
