@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from teacup_run import coding_task
 from teacup_run.coding_task import CodingTaskError, _collect_diff, _create_worktree, run_coding_task
 from teacup_run.manifest import AgentSpec
 
@@ -376,3 +377,77 @@ def test_collect_diff_reports_a_committed_rename_correctly(tmp_path, target_repo
 
     assert "RENAMED.md" in files_changed
     assert commits_made == 1
+
+
+# --- the agent's own run directory -------------------------------------------
+
+
+def test_run_dir_is_inside_the_worktree_and_reported_back(tmp_path, target_repo, monkeypatch):
+    """It has to be somewhere the launched agent can read back: teacup-agent
+    externalizes large tool results there and hands the model the path, and its
+    read_file refuses anything outside the project it was given."""
+    captured = {}
+    import teacup_run.external_cli as external_cli_mod
+
+    real = external_cli_mod.run_external
+
+    def spy(spec, task, **kwargs):
+        captured.update(kwargs)
+        return real(spec, task, **kwargs)
+
+    monkeypatch.setattr(external_cli_mod, "run_external", spy)
+    task_result = run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
+
+    run_dir = captured["run_dir"]
+    assert run_dir == task_result.worktree_path / coding_task.ARTIFACTS_DIRNAME
+    assert run_dir.is_relative_to(task_result.worktree_path)  # readable by the child
+    # The fake CLI writes nothing there, so the field reports "no trajectory" rather
+    # than a path to an empty directory.
+    assert task_result.agent_artifacts_path is None
+
+
+def test_artifacts_are_not_reported_as_files_the_task_changed(tmp_path, target_repo):
+    """The filter must not depend on the target repo's .gitignore. This fixture has
+    no .gitignore at all — which is the unsafe case, and the one a caller pointing
+    this at an arbitrary repo actually gets."""
+    assert not (target_repo / ".gitignore").exists()
+    task_result = run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
+
+    artifacts = task_result.worktree_path / coding_task.ARTIFACTS_DIRNAME
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "state.json").write_text('{"goal": "t"}', encoding="utf-8")
+    (artifacts / "step01_0_read_file.txt").write_text("x" * 5000, encoding="utf-8")
+
+    files_changed, diff_stat, _ = coding_task._collect_diff(task_result.worktree_path, "main")
+    assert files_changed == ()
+    assert coding_task.ARTIFACTS_DIRNAME not in diff_stat
+
+
+def test_real_task_output_is_still_reported_alongside_artifacts(tmp_path, target_repo):
+    """The filter must drop only the run dir — a change the task actually made still
+    has to show up, or it would hide the thing the caller came for."""
+    task_result = run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
+
+    artifacts = task_result.worktree_path / coding_task.ARTIFACTS_DIRNAME
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "state.json").write_text("{}", encoding="utf-8")
+    (task_result.worktree_path / "real_change.py").write_text("x = 1\n", encoding="utf-8")
+
+    files_changed, _, _ = coding_task._collect_diff(task_result.worktree_path, "main")
+    assert files_changed == ("real_change.py",)
+
+
+def test_a_file_blocking_the_run_dir_fails_as_a_coding_task_error(tmp_path, target_repo):
+    """A target repo with a plain file at that name is a real input, and the failure
+    happens after a worktree has already been registered in the caller's repo."""
+    _git(["config", "user.email", "t@example.com"], cwd=target_repo)
+    _git(["config", "user.name", "t"], cwd=target_repo)
+    (target_repo / coding_task.ARTIFACTS_DIRNAME).write_text("not a directory\n", encoding="utf-8")
+    _git(["add", "-A"], cwd=target_repo)
+    _git(["commit", "-m", "add a file where the run dir would go"], cwd=target_repo)
+
+    before = _git(["worktree", "list"], cwd=target_repo).stdout
+    with pytest.raises(CodingTaskError):
+        run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
+    # and it does not leave a worktree registered in the caller's real repository
+    assert _git(["worktree", "list"], cwd=target_repo).stdout == before

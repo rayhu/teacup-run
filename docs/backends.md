@@ -71,9 +71,21 @@ resolution), but `cwd` is what actually fixes what a launched program sees
 when it resolves a relative path; a future non-`uv` framework would still
 need `cwd` set correctly, `--project` insertion or not.
 
-`--run-dir` and `--memory` are still pointed at teacup-run's own scratch
-directory, not the target checkout — otherwise concurrent invocations would
-collide and the checkout would accumulate run artifacts across every call.
+`--memory` is pointed at teacup-run's own scratch directory, not the target
+checkout. `--run-dir` was too, until a coding task showed why it cannot be: the
+launched agent externalizes large tool results into that directory and hands the
+model the path to read back, and teacup-agent's `read_file` refuses paths outside
+the project it was given — so a run dir outside the checkout silently truncated
+every large file the model read and pointed it at an address it was forbidden to
+open. `run_coding_task` now puts it at `.teacup-run/` inside the worktree.
+
+The two objections that kept it outside are still answered, just differently.
+Concurrent invocations do not collide because each coding task gets its own
+worktree, so each gets its own `.teacup-run/`. The checkout does not accumulate
+artifacts across calls because that worktree is disposable — and
+`_collect_diff` filters the directory out of `files_changed`/`diff_stat`
+explicitly, rather than relying on the target repo's `.gitignore`, which is a
+property of that repo and not something this library may assume.
 
 ## What `sandbox.py` actually bounds
 
@@ -196,10 +208,20 @@ question about it, without ever touching that repo's primary checkout:
   "a reviewable local branch, with a diff and a test result attached" — the
   same human-gated stopping point every round of this engagement has used by
   hand, now built into the module itself rather than a habit to remember.
+- **The run's own trajectory is kept, at `CodingTaskResult.agent_artifacts_path`.**
+  `.teacup-run/` inside the worktree: the launched agent's `--run-dir`, holding
+  its `state.json` and every externalized tool result. It used to live in a
+  `TemporaryDirectory` that was deleted the moment the subprocess exited, which
+  meant a disappointing run left no record of *why* — and the step-by-step
+  trace is the only thing that separates "the model never tried" from "the model
+  tried and the tool refused." `None` when the directory came back empty, so the
+  field promises a trajectory only when there is one.
 - **The worktree is left in place, not cleaned up.** It's the reviewable
   artifact — `CodingTaskResult.worktree_path` is where a human looks. Cleanup
   (`git worktree remove`) is the caller's job once a branch has been reviewed
-  and either kept or discarded.
+  and either kept or discarded. Note that it takes the trajectory with it:
+  `agent_artifacts_path` lives inside the worktree, so copy anything worth
+  keeping out first.
 
 ## What's deferred
 

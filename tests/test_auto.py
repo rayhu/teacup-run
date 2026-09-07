@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -86,6 +87,39 @@ def test_add_skill_is_idempotent_and_rejects_unknown_names(note_taker_path):
 def test_an_unresolvable_reference_says_so(tmp_path):
     with pytest.raises(RegistryError, match="not in the hub"):
         AutoAgent.from_pretrained("nobody/nothing", hub=tmp_path / "hub")
+
+
+# --- MCP servers ----------------------------------------------------------------
+
+_MCP_SERVER = {"command": sys.executable, "args": ["tests/fixtures/demo_mcp_server.py"]}
+
+
+def test_add_mcp_server_extends_the_tool_list(note_taker_path):
+    agent = AutoAgent.from_pretrained(str(note_taker_path))
+    before = [t.name for t in agent.tools]
+    try:
+        agent.add_mcp_server("demo", _MCP_SERVER)
+        assert [t.name for t in agent.tools] == before + ["demo__echo", "demo__other", "demo__explode"]
+    finally:
+        agent.close()
+
+
+def test_two_servers_share_one_hub(note_taker_path):
+    """add_mcp_server() called twice must not spin up a second background loop."""
+    agent = AutoAgent.from_pretrained(str(note_taker_path))
+    try:
+        agent.add_mcp_server("first", _MCP_SERVER)
+        hub_after_first = agent._mcp_hub
+        agent.add_mcp_server("second", {**_MCP_SERVER, "tools": ["echo"]})
+        assert agent._mcp_hub is hub_after_first
+    finally:
+        agent.close()
+
+
+def test_close_is_a_no_op_when_no_server_was_ever_added(note_taker_path):
+    agent = AutoAgent.from_pretrained(str(note_taker_path))
+    agent.close()  # must not raise
+    agent.close()  # and is safe to call twice
 
 
 def test_run_uses_the_packages_tools_and_checks(note_taker_path):

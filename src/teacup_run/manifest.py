@@ -16,6 +16,7 @@ import yaml
 
 __all__ = [
     "AgentSpec",
+    "AGENTS_MD_NAME",
     "ManifestError",
     "MANIFEST_NAME",
     "SkillMeta",
@@ -24,15 +25,19 @@ __all__ = [
 ]
 
 MANIFEST_NAME = "agent.yaml"
+AGENTS_MD_NAME = "AGENTS.md"
 
-# Agent Skills spec (https://agentskills.io/specification): name is lowercase letters,
-# digits and hyphens, max 64 chars, and must equal the skill's folder name — the same
-# rule teacup-agent's own skills.py enforces, so a skill package validated by either
-# repo means the same thing. description is capped at 1024 chars: one catalog line,
-# not a paragraph.
+# Agent Skills spec (platform.claude.com/docs/en/agents-and-tools/agent-skills):
+# name is lowercase letters, digits and hyphens, max 64 chars, must not contain the
+# reserved words "claude"/"anthropic", and (teacup's own added rule, applied
+# consistently by both repos) must equal the skill's folder name — the same checks
+# teacup-agent's own skills.py enforces, so a skill package validated by either repo
+# means the same thing. description must be non-empty and is capped at 1024 chars:
+# one catalog line, not a paragraph.
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _SKILL_MAX_NAME_LEN = 64
 _SKILL_MAX_DESCRIPTION_LEN = 1024
+_SKILL_RESERVED_NAME_WORDS = ("claude", "anthropic")
 
 
 @dataclass
@@ -96,25 +101,75 @@ class AgentSpec:
                 f"{MANIFEST_NAME} references {relative!r}, which is missing"
             ) from exc
 
+    def agents_md(self) -> str | None:
+        """The package's own `AGENTS.md`, if it has one — the open, now
+        Linux-Foundation-governed convention (github.com/agentsmd/agents.md) a
+        repo-root instructions file for a coding agent already follows across 20+
+        tools. Plain markdown, no frontmatter, so unlike a skill there is nothing to
+        validate — its presence is the whole contract.
+
+        Scoped to the package's own root only for now, not the full spec's nested
+        walk (an `AGENTS.md` in every parent directory up to a repo root, closest
+        wins on conflict) — that needs a repo-boundary heuristic this format doesn't
+        have a natural one for yet, and reading arbitrary ancestor directories by
+        default is exactly the kind of scope creep this project's own threat model
+        should decide on deliberately, not acquire by accident.
+        """
+        path = self.root / AGENTS_MD_NAME
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8").strip()
+
     def instructions(self) -> str:
-        return self.read(self.instructions_path).strip()
+        """The instructions a run's system prompt is built from.
+
+        Combines two independent sources: the package's own `AGENTS.md`, if it has
+        one, as background context, followed by its own authored instructions file
+        (`instructions:` in `agent.yaml`, default `prompts/system.md`) as the actual
+        task-specific persona — unless that file doesn't exist, in which case
+        `AGENTS.md` alone stands in for it, so a plain `AGENTS.md`-only directory
+        works as a Teacup Run package without also requiring Teacup's own file on
+        top of a convention that already covers the same ground.
+        """
+        own_path = self.root / self.instructions_path
+        own = own_path.read_text(encoding="utf-8").strip() if own_path.is_file() else None
+        agents = self.agents_md()
+
+        if own is None and agents is None:
+            raise ManifestError(
+                f"{MANIFEST_NAME} references {self.instructions_path!r}, which is missing, "
+                f"and there is no {AGENTS_MD_NAME} to fall back to"
+            )
+        if own is None:
+            return agents
+        if agents is None:
+            return own
+        return f"{agents}\n\n---\n\n{own}"
 
     def skill_body(self, skill: str) -> str:
         return strip_frontmatter(self.read(f"skills/{skill}/SKILL.md"))
 
     def skill_meta(self, skill: str) -> SkillMeta | None:
         """Parsed, spec-validated frontmatter for a packaged skill, or `None` if its
-        `SKILL.md` has no `name`/`description`, or its declared `name` isn't spec-shaped
-        or disagrees with the folder it lives in — the same conformance rule
-        teacup-agent's own `skills.py` applies, so a skill that validates in one repo
-        validates in the other."""
+        `SKILL.md` has no `name`/`description`/body, its declared `name` isn't
+        spec-shaped, contains a reserved word, or disagrees with the folder it lives
+        in — the same conformance rule teacup-agent's own `skills.py` applies (body
+        included: a skill with no procedure to load is exactly as unusable as one
+        with no description), so a skill that validates in one repo validates in the
+        other."""
         text = self.read(f"skills/{skill}/SKILL.md")
         meta = parse_frontmatter(text)
         name = str(meta.get("name") or skill)
         description = str(meta.get("description", "")).strip()
-        if not description:
+        body = strip_frontmatter(text)
+        if not description or not body:
             return None
-        if name != skill or not _SKILL_NAME_RE.match(name) or len(name) > _SKILL_MAX_NAME_LEN:
+        if (
+            name != skill
+            or not _SKILL_NAME_RE.match(name)
+            or len(name) > _SKILL_MAX_NAME_LEN
+            or any(word in name for word in _SKILL_RESERVED_NAME_WORDS)
+        ):
             return None
         if len(description) > _SKILL_MAX_DESCRIPTION_LEN:
             description = description[:_SKILL_MAX_DESCRIPTION_LEN]
@@ -130,17 +185,23 @@ class AgentSpec:
             allowed_tools=allowed_tools,
         )
 
-    def available_skills(self) -> tuple[str, ...]:
-        """Packaged skill names whose `SKILL.md` is Agent Skills-conformant. A folder
-        with a `SKILL.md` that fails validation (no description, a spec-illegal or
-        folder-mismatched name) is not offered — the same "malformed is skipped, not
-        fatal" rule `skills.py`'s own `discover()` applies, rather than surfacing a
-        skill `add_skill()` would only fail on later."""
+    def _skill_folders(self) -> tuple[str, ...]:
+        """Folder names under `skills/` that have a `SKILL.md` file — valid or not.
+        Kept separate from `available_skills()` so `validate()` can tell "no SKILL.md
+        at all" apart from "a SKILL.md that fails Agent Skills validation" instead of
+        reporting both as the same misleading "no SKILL.md" error."""
         skills_dir = self.root / "skills"
         if not skills_dir.is_dir():
             return ()
-        names = sorted(d.name for d in skills_dir.iterdir() if (d / "SKILL.md").is_file())
-        return tuple(name for name in names if self.skill_meta(name) is not None)
+        return tuple(sorted(d.name for d in skills_dir.iterdir() if (d / "SKILL.md").is_file()))
+
+    def available_skills(self) -> tuple[str, ...]:
+        """Packaged skill names whose `SKILL.md` is Agent Skills-conformant. A folder
+        with a `SKILL.md` that fails validation (no description/body, a spec-illegal,
+        reserved, or folder-mismatched name) is not offered — the same "malformed is
+        skipped, not fatal" rule `skills.py`'s own `discover()` applies, rather than
+        surfacing a skill `add_skill()` would only fail on later."""
+        return tuple(name for name in self._skill_folders() if self.skill_meta(name) is not None)
 
     # -- loading -----------------------------------------------------------
 
@@ -216,12 +277,23 @@ class AgentSpec:
                 f"{MANIFEST_NAME} declares unknown goal checks: {', '.join(unknown_checks)}. "
                 f"Known checks: {', '.join(sorted(checks)) or 'none'}."
             )
-        unknown_skills = sorted(set(self.skills) - set(self.available_skills()))
-        if unknown_skills:
+        skill_folders = set(self._skill_folders())
+        missing_skills = sorted(set(self.skills) - skill_folders)
+        if missing_skills:
             raise ManifestError(
-                f"{MANIFEST_NAME} declares skills with no SKILL.md: {', '.join(unknown_skills)}"
+                f"{MANIFEST_NAME} declares skills with no SKILL.md: {', '.join(missing_skills)}"
             )
-        self.instructions()  # raises if the prompt file is missing
+        # Distinct from the missing-file case above: the SKILL.md exists but its
+        # frontmatter fails Agent Skills validation (bad name, no description/body).
+        # Reporting this as "no SKILL.md" (as an earlier version of this check did)
+        # sends a human looking for a file that is right there.
+        invalid_skills = sorted(name for name in self.skills if self.skill_meta(name) is None)
+        if invalid_skills:
+            raise ManifestError(
+                f"{MANIFEST_NAME} declares skills whose SKILL.md fails Agent Skills "
+                f"validation (bad name, or no description/body): {', '.join(invalid_skills)}"
+            )
+        self.instructions()  # raises if neither the prompt file nor AGENTS.md exists
 
     def to_dict(self) -> dict[str, Any]:
         """The manifest as it should be written back out (used when publishing)."""
