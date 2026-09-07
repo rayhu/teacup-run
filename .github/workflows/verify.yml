@@ -1,0 +1,35 @@
+name: Verify
+
+# Every test in this repo is hermetic — a throwaway git-repo fixture, fake_cli.py,
+# live=False everywhere — so this can run on every pull request and on main without
+# an API key, without network access, and without spending anything.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The job only reads the checkout, so say so: without this, a repository whose default
+# workflow permissions are read-write hands a write-scoped token to code that arrived in
+# a pull request.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # Deliberately pinned to tags, not commit SHAs — see teacup-agent's own CI for the
+      # trade-off this accepts. Revisit if this job ever gets a secret.
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # `dev` is an optional extra (pytest, openai) — a plain `uv sync` alone wouldn't
+      # install it, and pytest not existing would silently look like "no tests to run"
+      # rather than a clear failure. Explicit, not implicit.
+      - run: uv sync --locked --extra dev
+
+      - name: Tests — sandbox, coding_task, manifest, budget, model, tools
+        run: uv run pytest
