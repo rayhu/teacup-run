@@ -79,6 +79,15 @@ spent 8 steps on those round-trips alone. Three files to read, four edits to
 land, a test to write and a suite to run does not fit in 22 once two-thirds of
 the reads cost double. Budget is not the constraint at this size either: the
 22-step run still returned 88% of its $0.25 unspent.
+
+Nor is wall clock, which is the other ceiling a step raise can quietly push a run
+into: `timeout=600` below is passed straight through as teacup-agent's own
+`--deadline`, and hitting *that* is worse than hitting the step ceiling — a
+timeout returns an empty answer and `stopped_early`, where the step ceiling at
+least returns the forced wrap-up. Measured across the 30-step runs rather than
+assumed: 147s, 155s, and 111s elapsed, against 600s. About a quarter of the
+deadline, so 600 still bounds 30 steps with room. Re-measure before raising this
+much further, or raise `timeout` alongside it.
 """
 import os
 import sys

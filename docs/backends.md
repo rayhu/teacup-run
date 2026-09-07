@@ -208,10 +208,20 @@ question about it, without ever touching that repo's primary checkout:
   "a reviewable local branch, with a diff and a test result attached" — the
   same human-gated stopping point every round of this engagement has used by
   hand, now built into the module itself rather than a habit to remember.
+- **The run's own trajectory is kept, at `CodingTaskResult.agent_artifacts_path`.**
+  `.teacup-run/` inside the worktree: the launched agent's `--run-dir`, holding
+  its `state.json` and every externalized tool result. It used to live in a
+  `TemporaryDirectory` that was deleted the moment the subprocess exited, which
+  meant a disappointing run left no record of *why* — and the step-by-step
+  trace is the only thing that separates "the model never tried" from "the model
+  tried and the tool refused." `None` when the directory came back empty, so the
+  field promises a trajectory only when there is one.
 - **The worktree is left in place, not cleaned up.** It's the reviewable
   artifact — `CodingTaskResult.worktree_path` is where a human looks. Cleanup
   (`git worktree remove`) is the caller's job once a branch has been reviewed
-  and either kept or discarded.
+  and either kept or discarded. Note that it takes the trajectory with it:
+  `agent_artifacts_path` lives inside the worktree, so copy anything worth
+  keeping out first.
 
 ## What's deferred
 

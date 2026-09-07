@@ -401,7 +401,9 @@ def test_run_dir_is_inside_the_worktree_and_reported_back(tmp_path, target_repo,
     run_dir = captured["run_dir"]
     assert run_dir == task_result.worktree_path / coding_task.ARTIFACTS_DIRNAME
     assert run_dir.is_relative_to(task_result.worktree_path)  # readable by the child
-    assert task_result.agent_artifacts_path == run_dir
+    # The fake CLI writes nothing there, so the field reports "no trajectory" rather
+    # than a path to an empty directory.
+    assert task_result.agent_artifacts_path is None
 
 
 def test_artifacts_are_not_reported_as_files_the_task_changed(tmp_path, target_repo):
@@ -411,7 +413,7 @@ def test_artifacts_are_not_reported_as_files_the_task_changed(tmp_path, target_r
     assert not (target_repo / ".gitignore").exists()
     task_result = run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
 
-    artifacts = task_result.agent_artifacts_path
+    artifacts = task_result.worktree_path / coding_task.ARTIFACTS_DIRNAME
     artifacts.mkdir(parents=True, exist_ok=True)
     (artifacts / "state.json").write_text('{"goal": "t"}', encoding="utf-8")
     (artifacts / "step01_0_read_file.txt").write_text("x" * 5000, encoding="utf-8")
@@ -426,7 +428,7 @@ def test_real_task_output_is_still_reported_alongside_artifacts(tmp_path, target
     has to show up, or it would hide the thing the caller came for."""
     task_result = run_coding_task(_spec(tmp_path), "t", target_repo=target_repo, live=False)
 
-    artifacts = task_result.agent_artifacts_path
+    artifacts = task_result.worktree_path / coding_task.ARTIFACTS_DIRNAME
     artifacts.mkdir(parents=True, exist_ok=True)
     (artifacts / "state.json").write_text("{}", encoding="utf-8")
     (task_result.worktree_path / "real_change.py").write_text("x = 1\n", encoding="utf-8")

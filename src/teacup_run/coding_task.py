@@ -70,7 +70,12 @@ class CodingTaskResult:
     commits_made: int
     tests_passed: bool | None  # None: run_tests=False, or no test_command given
     test_output: str | None
-    agent_artifacts_path: Path | None = None  # the run's own trajectory, for diagnosis
+    # The run's own trajectory (state.json + externalized tool results), or None when
+    # the agent wrote nothing there — a crash before its first step, say. Populating it
+    # unconditionally would make the `| None` decorative and promise a trajectory that
+    # may not exist. Note it lives inside the worktree, so `git worktree remove` takes
+    # it with it.
+    agent_artifacts_path: Path | None = None
 
     def __str__(self) -> str:
         return self.result.answer
@@ -223,8 +228,14 @@ def run_coding_task(
         commits_made=commits_made,
         tests_passed=tests_passed,
         test_output=test_output,
-        agent_artifacts_path=agent_run_dir,
+        agent_artifacts_path=agent_run_dir if _has_files(agent_run_dir) else None,
     )
+
+
+def _has_files(directory: Path) -> bool:
+    """Whether anything was actually written. `run_external` creates the directory
+    before launching, so its existence proves nothing."""
+    return directory.is_dir() and any(directory.iterdir())
 
 
 def _remove_worktree(target_repo: Path, worktree_path: Path) -> None:
