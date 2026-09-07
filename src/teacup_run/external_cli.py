@@ -24,8 +24,13 @@ sandbox.py's module docstring). teacup-agent's own CLI resolves
 cwd, so `sandbox.run_sandboxed` is called with `cwd=project_root` explicitly
 — an earlier version of this file relied on `--project` alone and shipped
 with those defaults silently resolving against an empty scratch directory
-instead. `--run-dir`/`--memory` stay absolute paths into teacup-run's own
-scratch space regardless, so run artifacts never land in the target project.
+instead. `--memory` stays an absolute path into teacup-run's own scratch
+space. `--run-dir` used to as well, and `coding_task.py` now deliberately points
+it *inside* the worktree instead — see `run_external`'s `run_dir` parameter for
+why the excerpt-plus-path mechanism it feeds only works when the model can reach
+the directory. Artifacts therefore do land in the target checkout for a coding
+task; `coding_task._collect_diff` filters them back out of the reported diff, and
+the worktree they land in is disposable.
 
 Current limitation, stated rather than hidden: `_build_argv` only knows how to
 insert `--project` after a `uv run ...`-shaped entrypoint. A future framework
@@ -72,6 +77,7 @@ def run_external(
     timeout: float | None = None,
     target_repo: Path | None = None,
     extra_flags: Sequence[str] = (),
+    run_dir: Path | None = None,
 ) -> Result:
     """Run `spec` (a `framework != "teacup"` package) as a sandboxed subprocess,
     normalizing its output into teacup-run's own `Result`.
@@ -84,6 +90,24 @@ def run_external(
     that needs this; a plain call leaves it unset and behaves exactly as before.
     `extra_flags` are appended to the launched CLI's argv verbatim (e.g.
     `coding_task.py` passes `--coding-tools --approve hooks`); empty by default.
+
+    `run_dir`: where the launched agent writes its `--run-dir` trajectory. This
+    is not just a place to put logs — teacup-agent externalizes any tool result
+    over 2000 chars into this directory and leaves the model a 600-char excerpt
+    plus the path, telling it to `read_file` that path for the rest. So the
+    directory has to be somewhere the model is *allowed to read*: teacup-agent's
+    `read_file` rejects anything outside its cwd, and `context.externalize()`
+    only emits a relative path when the run dir is under that cwd (it falls back
+    to an absolute one otherwise). A run dir outside the target repo therefore
+    silently truncates every large file the model reads and hands it a path it
+    is forbidden to follow — confirmed live: reading a 12147-char source file
+    showed the model 864 characters and an unusable absolute path, and it spent
+    six `edit_file` calls guessing at text it had never been shown.
+
+    Default `None` keeps the historical behaviour (a `TemporaryDirectory`
+    discarded when the subprocess exits), which is fine for a throwaway call but
+    also leaves no record of *why* a disappointing run went the way it did.
+    `coding_task.py` passes the worktree's own gitignored `runs/`.
     """
     project_root = _project_root(spec)
     cwd = target_repo if target_repo is not None else project_root
@@ -97,6 +121,9 @@ def run_external(
 
     with tempfile.TemporaryDirectory(prefix="teacup-run-external-") as scratch:
         scratch_dir = Path(scratch)
+        if run_dir is not None:
+            run_dir.mkdir(parents=True, exist_ok=True)
+        agent_run_dir = run_dir if run_dir is not None else scratch_dir / "runs"
         argv = _build_argv(
             spec.entrypoint or "uv run teacup-agent",
             project_root=project_root,
@@ -104,7 +131,7 @@ def run_external(
             budget=budget_usd,
             deadline=deadline_s,
             live=live,
-            run_dir=scratch_dir / "runs",
+            run_dir=agent_run_dir,
             memory_path=scratch_dir / "memory.json",
             extra_flags=extra_flags,
         )
