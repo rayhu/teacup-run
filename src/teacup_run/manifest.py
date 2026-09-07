@@ -7,15 +7,48 @@ human can act on, not a KeyError from inside a run.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-__all__ = ["AgentSpec", "ManifestError", "MANIFEST_NAME", "parse_frontmatter", "strip_frontmatter"]
+__all__ = [
+    "AgentSpec",
+    "ManifestError",
+    "MANIFEST_NAME",
+    "SkillMeta",
+    "parse_frontmatter",
+    "strip_frontmatter",
+]
 
 MANIFEST_NAME = "agent.yaml"
+
+# Agent Skills spec (https://agentskills.io/specification): name is lowercase letters,
+# digits and hyphens, max 64 chars, and must equal the skill's folder name — the same
+# rule teacup-agent's own skills.py enforces, so a skill package validated by either
+# repo means the same thing. description is capped at 1024 chars: one catalog line,
+# not a paragraph.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_SKILL_MAX_NAME_LEN = 64
+_SKILL_MAX_DESCRIPTION_LEN = 1024
+
+
+@dataclass
+class SkillMeta:
+    """A skill's Agent Skills frontmatter — the open format a folder + `SKILL.md`
+    already follows here, shared with teacup-agent and the wider ecosystem (OpenAI
+    Codex CLI, Microsoft Agent Framework, Cursor, GitHub Copilot). Exposes the spec's
+    optional fields instead of silently dropping them the way `skill_body()`'s plain
+    `strip_frontmatter()` always has."""
+
+    name: str
+    description: str
+    license: str | None = None
+    compatibility: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    allowed_tools: tuple[str, ...] = ()
 
 
 class ManifestError(ValueError):
@@ -69,11 +102,45 @@ class AgentSpec:
     def skill_body(self, skill: str) -> str:
         return strip_frontmatter(self.read(f"skills/{skill}/SKILL.md"))
 
+    def skill_meta(self, skill: str) -> SkillMeta | None:
+        """Parsed, spec-validated frontmatter for a packaged skill, or `None` if its
+        `SKILL.md` has no `name`/`description`, or its declared `name` isn't spec-shaped
+        or disagrees with the folder it lives in — the same conformance rule
+        teacup-agent's own `skills.py` applies, so a skill that validates in one repo
+        validates in the other."""
+        text = self.read(f"skills/{skill}/SKILL.md")
+        meta = parse_frontmatter(text)
+        name = str(meta.get("name") or skill)
+        description = str(meta.get("description", "")).strip()
+        if not description:
+            return None
+        if name != skill or not _SKILL_NAME_RE.match(name) or len(name) > _SKILL_MAX_NAME_LEN:
+            return None
+        if len(description) > _SKILL_MAX_DESCRIPTION_LEN:
+            description = description[:_SKILL_MAX_DESCRIPTION_LEN]
+        allowed_tools_raw = meta.get("allowed-tools", "")
+        allowed_tools = tuple(str(allowed_tools_raw).split()) if allowed_tools_raw else ()
+        metadata = meta.get("metadata") or {}
+        return SkillMeta(
+            name=name,
+            description=description,
+            license=meta.get("license"),
+            compatibility=meta.get("compatibility"),
+            metadata=metadata if isinstance(metadata, dict) else {},
+            allowed_tools=allowed_tools,
+        )
+
     def available_skills(self) -> tuple[str, ...]:
+        """Packaged skill names whose `SKILL.md` is Agent Skills-conformant. A folder
+        with a `SKILL.md` that fails validation (no description, a spec-illegal or
+        folder-mismatched name) is not offered — the same "malformed is skipped, not
+        fatal" rule `skills.py`'s own `discover()` applies, rather than surfacing a
+        skill `add_skill()` would only fail on later."""
         skills_dir = self.root / "skills"
         if not skills_dir.is_dir():
             return ()
-        return tuple(sorted(d.name for d in skills_dir.iterdir() if (d / "SKILL.md").is_file()))
+        names = sorted(d.name for d in skills_dir.iterdir() if (d / "SKILL.md").is_file())
+        return tuple(name for name in names if self.skill_meta(name) is not None)
 
     # -- loading -----------------------------------------------------------
 

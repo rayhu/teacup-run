@@ -94,3 +94,75 @@ def test_the_example_agent_is_a_valid_package(note_taker_path):
     assert spec.name == "teacup/note-taker"
     assert "concise-style" in spec.available_skills()
     assert spec.instructions()
+
+
+# --- Agent Skills spec conformance (skill_meta / available_skills) ------------
+
+
+def _agent_with_skill(tmp_path, skill_name, skill_md_text):
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "system.md").write_text("do things")
+    skill_dir = tmp_path / "skills" / skill_name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(skill_md_text, encoding="utf-8")
+    return AgentSpec.load(tmp_path, manifest_text=MINIMAL)
+
+
+def test_skill_meta_parses_the_spec_optional_fields(tmp_path):
+    spec = _agent_with_skill(
+        tmp_path,
+        "full-metadata",
+        """---
+name: full-metadata
+description: exercises every optional field the spec defines.
+license: Apache-2.0
+compatibility: requires git and docker
+allowed-tools: read_file run_command
+metadata:
+  author: someone
+---
+
+Body.""",
+    )
+    meta = spec.skill_meta("full-metadata")
+    assert meta.license == "Apache-2.0"
+    assert meta.compatibility == "requires git and docker"
+    assert meta.allowed_tools == ("read_file", "run_command")
+    assert meta.metadata == {"author": "someone"}
+
+
+def test_skill_meta_is_none_without_a_description(tmp_path):
+    spec = _agent_with_skill(tmp_path, "broken", "---\nname: broken\n---\n\nBody.")
+    assert spec.skill_meta("broken") is None
+
+
+def test_a_name_disagreeing_with_its_folder_is_not_available(tmp_path):
+    """Same conformance rule teacup-agent's skills.py applies: name must equal the
+    folder discover() found it under, or the skill answers to two identities."""
+    spec = _agent_with_skill(
+        tmp_path, "the-folder", "---\nname: a-different-name\ndescription: d.\n---\n\nBody."
+    )
+    assert "the-folder" not in spec.available_skills()
+    assert spec.skill_meta("the-folder") is None
+
+
+def test_a_spec_illegal_name_is_not_available(tmp_path):
+    spec = _agent_with_skill(tmp_path, "Bad_Name", "---\nname: Bad_Name\ndescription: d.\n---\n\nBody.")
+    assert "Bad_Name" not in spec.available_skills()
+
+
+def test_a_description_past_the_spec_limit_is_capped(tmp_path):
+    spec = _agent_with_skill(
+        tmp_path, "long-desc", f"---\nname: long-desc\ndescription: {'x' * 2000}\n---\n\nBody."
+    )
+    assert len(spec.skill_meta("long-desc").description) == 1024
+
+
+def test_the_example_agents_skill_has_no_optional_fields_declared(note_taker_path):
+    """The shipped example predates the optional fields; parsing it must not require
+    them, and it should come back with the same empty defaults a bare skill gets."""
+    spec = AgentSpec.load(note_taker_path)
+    meta = spec.skill_meta("concise-style")
+    assert meta.license is None
+    assert meta.metadata == {}
+    assert meta.allowed_tools == ()
