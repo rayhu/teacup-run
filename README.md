@@ -582,6 +582,11 @@ We are particularly interested in contributors who care about:
 
 If the idea resonates with you, open an issue, propose a package format, publish an experimental agent, build an adapter, challenge an abstraction, or submit a pull request.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for where things live, what's checked, and the
+rules that came from a real bug. Issues labeled
+[`good first issue`](https://github.com/rayhu/teacup-run/labels/good%20first%20issue)
+are scoped small enough to start there.
+
 The standard should emerge from builders using it.
 
 ---
