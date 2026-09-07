@@ -13,9 +13,17 @@ from typing import Any
 
 import yaml
 
-__all__ = ["AgentSpec", "ManifestError", "MANIFEST_NAME", "parse_frontmatter", "strip_frontmatter"]
+__all__ = [
+    "AgentSpec",
+    "AGENTS_MD_NAME",
+    "ManifestError",
+    "MANIFEST_NAME",
+    "parse_frontmatter",
+    "strip_frontmatter",
+]
 
 MANIFEST_NAME = "agent.yaml"
+AGENTS_MD_NAME = "AGENTS.md"
 
 
 class ManifestError(ValueError):
@@ -63,8 +71,50 @@ class AgentSpec:
                 f"{MANIFEST_NAME} references {relative!r}, which is missing"
             ) from exc
 
+    def agents_md(self) -> str | None:
+        """The package's own `AGENTS.md`, if it has one — the open, now
+        Linux-Foundation-governed convention (github.com/agentsmd/agents.md) a
+        repo-root instructions file for a coding agent already follows across 20+
+        tools. Plain markdown, no frontmatter, so unlike a skill there is nothing to
+        validate — its presence is the whole contract.
+
+        Scoped to the package's own root only for now, not the full spec's nested
+        walk (an `AGENTS.md` in every parent directory up to a repo root, closest
+        wins on conflict) — that needs a repo-boundary heuristic this format doesn't
+        have a natural one for yet, and reading arbitrary ancestor directories by
+        default is exactly the kind of scope creep this project's own threat model
+        should decide on deliberately, not acquire by accident.
+        """
+        path = self.root / AGENTS_MD_NAME
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8").strip()
+
     def instructions(self) -> str:
-        return self.read(self.instructions_path).strip()
+        """The instructions a run's system prompt is built from.
+
+        Combines two independent sources: the package's own `AGENTS.md`, if it has
+        one, as background context, followed by its own authored instructions file
+        (`instructions:` in `agent.yaml`, default `prompts/system.md`) as the actual
+        task-specific persona — unless that file doesn't exist, in which case
+        `AGENTS.md` alone stands in for it, so a plain `AGENTS.md`-only directory
+        works as a Teacup Run package without also requiring Teacup's own file on
+        top of a convention that already covers the same ground.
+        """
+        own_path = self.root / self.instructions_path
+        own = own_path.read_text(encoding="utf-8").strip() if own_path.is_file() else None
+        agents = self.agents_md()
+
+        if own is None and agents is None:
+            raise ManifestError(
+                f"{MANIFEST_NAME} references {self.instructions_path!r}, which is missing, "
+                f"and there is no {AGENTS_MD_NAME} to fall back to"
+            )
+        if own is None:
+            return agents
+        if agents is None:
+            return own
+        return f"{agents}\n\n---\n\n{own}"
 
     def skill_body(self, skill: str) -> str:
         return strip_frontmatter(self.read(f"skills/{skill}/SKILL.md"))
@@ -154,7 +204,7 @@ class AgentSpec:
             raise ManifestError(
                 f"{MANIFEST_NAME} declares skills with no SKILL.md: {', '.join(unknown_skills)}"
             )
-        self.instructions()  # raises if the prompt file is missing
+        self.instructions()  # raises if neither the prompt file nor AGENTS.md exists
 
     def to_dict(self) -> dict[str, Any]:
         """The manifest as it should be written back out (used when publishing)."""
