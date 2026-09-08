@@ -18,9 +18,9 @@ that the ~80-line control loop fits in one head").
 
 ---
 
-### 1. `teacup run` — the CLI
+### 1. `teacup run` — the CLI — DONE (2026-09-08)
 
-**Now**: there is none. `pyproject.toml` declares no `[project.scripts]`, and running an
+**Was**: there was none. `pyproject.toml` declared no `[project.scripts]`, and running an
 agent means importing `AutoAgent` in Python — which contradicts the rule the README
 states as the reason this project exists ("executing an agent must not require writing
 Python").
@@ -44,6 +44,24 @@ already in the config schema, and a `run` that never reaches the network on its 
 the safer default), and **exit code 1 for "goal not met" stays as the table specifies** —
 an agent that declared checks and failed them did not do the job, and the exit table is
 the contract. `--strict` can be added later without breaking it.
+
+**What shipped**: the nine outstanding table items. `stop_kind` on `Result`, so "budget"
+and "error" are told apart by a value rather than by parsing prose written for a human;
+`AgentSpec.missing_environment()`, kept out of `validate()` for the reason §2 gives;
+`Budget.remaining()` lifted out of `Ledger.render`; `load_env(search_cwd=False)`;
+`config.py`; `cli.py`; `[project.scripts]`; `.env.example`; and `tests/test_cli.py`.
+
+Two things the implementation learned that the design could not have. The CLI test suite
+fakes `model._call_openai`, **not** `loop.call_model` — `loop.run` takes
+`model_fn=call_model` as a default argument, bound when the function was defined, so
+patching the module attribute changes nothing and the test silently calls the real
+provider. And a run that crashes has no goal verdict, which is not the same as passing:
+reporting `goal.met: true` there would have called a failed run successful, so a missing
+verdict means "met" only when the run also completed.
+
+Not verified: no live provider call was made. The whole suite runs on the faked provider
+seam, so what is pinned is the CLI's own behaviour — preflight, exit codes, output
+separation, the JSON shape — and not that any particular model answers well.
 
 **Definition of done**: `uv run teacup run examples/note-taker "..."` works with no
 config file present; a missing declared environment variable fails at preflight with

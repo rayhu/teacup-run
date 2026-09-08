@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import env as env_mod
 
 __all__ = [
     "AgentSpec",
@@ -262,6 +265,26 @@ class AgentSpec:
             root=root,
             raw=data,
         )
+
+    def missing_environment(self) -> tuple[str, ...]:
+        """Declared environment variables that are absent or still placeholders.
+
+        Deliberately **not** part of `validate()`. That runs inside
+        `from_pretrained()`, and this repo's own suite loads `examples/note-taker`
+        with a faked model and no key at all — enforcing there would make the library
+        unusable offline, which is the opposite of what a preflight check is for.
+        The CLI asks this question separately, once, before it spends anything.
+
+        A placeholder counts as missing for the same reason `env.py` refuses to load
+        one: a copied-but-unedited `.env` produces a 401 halfway through a run rather
+        than a message up front, and the second is the one worth having.
+        """
+        missing = []
+        for name in self.environment_required:
+            value = os.environ.get(name, "").strip()
+            if not value or value.lower() in env_mod.PLACEHOLDERS:
+                missing.append(name)
+        return tuple(missing)
 
     def validate(self, *, tools: set[str], checks: set[str]) -> None:
         """Cross-check the manifest against what the package actually provides."""

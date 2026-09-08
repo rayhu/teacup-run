@@ -1,6 +1,7 @@
 # Executing an agent
 
-**Status:** proposal, awaiting review. Nothing here is implemented yet.
+**Status:** implemented (2026-09-08). This file remains the design; where it and
+`src/teacup_run/cli.py` disagree, fix this file first and the code second.
 **Scope:** the design of `teacup run`. The rule it implements — executing an
 agent must not require writing Python — is stated in the [README](../README.md).
 **Translation:** [中文版](execution.zh-CN.md). This file is the original; if the
@@ -220,11 +221,14 @@ either way, so nothing here changes that guarantee.
 Tests use the existing `model_fn` seam, so the CLI suite runs with no key and no
 spend, like the rest of the suite.
 
-## 9. Open questions
+## 9. Open questions — answered
 
-1. **Should `run` auto-pull an unresolved ref**, or require `teacup pull`
-   first? Auto-pull is friendlier; explicit pull means `run` never reaches the
-   network on its own.
-2. **Exit code 1 for "goal not met"** treats an honest, completed, under-budget
-   run as a failure. Correct for CI, possibly surprising interactively. Keep, or
-   gate behind `--strict`?
+1. **Auto-pull** follows `hub.auto_pull`, default false. The key was already in
+   §4's config schema, so the design had answered this and the question was
+   redundant; a `run` that never reaches the network on its own is the safer
+   default, and someone who wants the friendlier behaviour opts into it once.
+2. **Exit code 1 for "goal not met" stays.** An agent that declared checks and
+   failed them did not do the job, and §5's table is the contract — changing it
+   invents a different one. `--strict` can be added later without breaking
+   anything, which is the asymmetry that settles it: keeping 1 is reversible,
+   shipping 0 and changing it later is not.

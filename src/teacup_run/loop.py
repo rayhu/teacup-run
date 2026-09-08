@@ -44,6 +44,11 @@ class Result:
     tool_calls: tuple[str, ...] = ()
     stopped_early: bool = False
     stop_reason: str | None = None
+    # Why it stopped, as a value rather than as prose. `stop_reason` is written for a
+    # human and its two producers are a BudgetExceeded message and an f-string of an
+    # exception; a caller that needs to exit 2 for one and 3 for the other would have
+    # to parse that, which is a smell and would break the moment the wording changed.
+    stop_kind: str | None = None  # "budget" | "error" | None
 
     def render_ledger(self, budget: Budget | None = None) -> str:
         header = "Task stopped early" if self.stopped_early else "Task completed"
@@ -87,6 +92,7 @@ def run(
     verdict: GoalVerdict | None = None
     stopped_early = False
     stop_reason: str | None = None
+    stop_kind: str | None = None
     answer = ""
     attempts = 0
     prompt = task
@@ -108,11 +114,11 @@ def run(
                 model_fn=model_fn,
             )
         except BudgetExceeded as exc:
-            stopped_early, stop_reason = True, exc.reason
+            stopped_early, stop_reason, stop_kind = True, exc.reason, "budget"
             answer = _fallback(best, answer, f"The run stopped before finishing: {exc.reason}")
             break
         except Exception as exc:  # noqa: BLE001 - surfaced with the ledger, not swallowed
-            stopped_early, stop_reason = True, f"{type(exc).__name__}: {exc}"
+            stopped_early, stop_reason, stop_kind = True, f"{type(exc).__name__}: {exc}", "error"
             answer = _fallback(best, answer, f"The run failed: {stop_reason}")
             break
 
@@ -143,6 +149,7 @@ def run(
         tool_calls=tuple(called),
         stopped_early=stopped_early,
         stop_reason=stop_reason,
+        stop_kind=stop_kind,
     )
 
 

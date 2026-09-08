@@ -155,7 +155,7 @@ class Ledger:
         if budget is not None and budget.usd is not None:
             out.append("")
             out.append(line("Budget", budget.usd))
-            out.append(line("Remaining", max(0.0, budget.usd - self.total_cost)))
+            out.append(line("Remaining", budget.remaining(self) or 0.0))
         return "\n".join(out)
 
     def render_usage(self) -> str:
@@ -182,6 +182,16 @@ class Budget:
             raise BudgetExceeded(f"reached the {self.max_tool_calls}-tool-call limit")
         if self.deadline_s is not None and ledger.elapsed_s >= self.deadline_s:
             raise BudgetExceeded(f"reached the {self.deadline_s:.0f}s deadline")
+
+    def remaining(self, ledger: Ledger) -> float | None:
+        """Dollars left, or None when no dollar ceiling was set.
+
+        Lifted out of `Ledger.render`, where it lived as an expression: a caller that
+        wants the number for a JSON field should not have to re-derive it and risk
+        deriving it differently. Floored at zero for the same reason `render` floors it
+        — a run that overshot has nothing left, not a negative allowance.
+        """
+        return None if self.usd is None else max(0.0, self.usd - ledger.total_cost)
 
     @classmethod
     def of(cls, value: "Budget | float | int | None") -> "Budget":

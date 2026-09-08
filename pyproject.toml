@@ -10,6 +10,9 @@ dependencies = [
     "mcp>=2.1", # MCP client (SDK v2, speaks the 2026-07-28 stateless spec) — see mcp_tools.py
 ]
 
+[project.scripts]
+teacup = "teacup_run.cli:main"
+
 [project.optional-dependencies]
 # Only the provider you actually call needs installing.
 openai = ["openai>=1.60"]
