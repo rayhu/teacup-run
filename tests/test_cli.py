@@ -1,8 +1,9 @@
 """`teacup run` — preflight, exit codes, output separation, and the --json shape.
 
-No key and no spend: the model is faked through `loop.call_model`, which is the seam
-`docs/execution.md` §8 names for exactly this. A CLI suite that needed a real key would
-be a CLI suite nobody runs.
+No key and no spend: the model is faked at the provider dispatch (`_fake`, below), not
+at `loop.call_model` — `loop.run` binds `model_fn=call_model` as a default argument, so
+patching that name afterwards changes nothing and the test quietly calls the real
+provider. A CLI suite that needed a real key would be a CLI suite nobody runs.
 """
 
 from __future__ import annotations
@@ -67,10 +68,21 @@ def _fake(monkeypatch, *replies):
     """
     from teacup_run import model as model_mod
 
-    calls = []
+    class _Calls(list):
+        """A list of message histories, plus the model names they were sent to.
+
+        A plain list cannot carry the attribute, and existing tests index and compare
+        this against `[]`, so subclassing keeps both readings working.
+        """
+
+        models: list[str]
+
+    calls = _Calls()
+    models: list[str] = []
 
     def fake_provider(model, messages, tools=()):
         calls.append(messages)
+        models.append(model)
         return replies[min(len(calls) - 1, len(replies) - 1)]
 
     # All three branches, not just the one examples/note-taker happens to use. Patching
@@ -80,6 +92,7 @@ def _fake(monkeypatch, *replies):
     # the OpenAI branch really is live on a `.[dev]` install.
     for provider in ("_call_openai", "_call_anthropic", "_call_google"):
         monkeypatch.setattr(model_mod, provider, fake_provider)
+    calls.models = models
     return calls
 
 
@@ -316,6 +329,190 @@ def test_an_absent_config_file_is_a_valid_state(tmp_path, monkeypatch):
     assert load_config() == Config()
 
 
+
+# --- stdout belongs to teacup ------------------------------------------------
+
+
+def _noisy_package(tmp_path, *, at_import: str, in_tool: str) -> str:
+    """A package that prints, from both places a package gets to run code."""
+    root = tmp_path / "noisy"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: test/noisy\n"
+        "version: 0.1.0\n"
+        "description: prints on stdout.\n"
+        "model:\n  primary: gpt-5-mini\n"
+        "instructions: prompts/system.md\n"
+        "tools: [make_noise]\n"
+        "budget:\n  default_usd: 0.5\n",
+        encoding="utf-8",
+    )
+    (root / "tools.py").write_text(
+        "from teacup_run import tool\n"
+        f"print({at_import!r})\n"
+        "@tool\n"
+        "def make_noise(artifacts: dict, text: str = '') -> dict:\n"
+        '    """Say something.\n\n    Args:\n        text: anything.\n    """\n'
+        f"    print({in_tool!r})\n"
+        "    return {'ok': True}\n",
+        encoding="utf-8",
+    )
+    return str(root)
+
+
+def test_json_stays_one_object_even_when_the_package_prints(tmp_path, monkeypatch, capsys):
+    """Both sites, not just the import.
+
+    Wrapping only `from_pretrained` passes a test whose fixture prints at module scope
+    while a package that prints from a *tool function* still breaks the contract — so
+    this package does both, and the tool is actually called.
+    """
+    ref = _noisy_package(tmp_path, at_import="IMPORT-TIME NOISE", in_tool="TOOL-TIME NOISE")
+    _fake(
+        monkeypatch,
+        tool_reply("make_noise", {"text": "hi"}),
+        text_reply("done"),
+    )
+
+    code = cli.main(["run", ref, "task", "--no-dotenv", "--json"])
+    out = capsys.readouterr().out
+
+    assert code == EXIT_OK
+    parsed = json.loads(out)  # would raise if anything shared the stream
+    assert parsed["agent"]["name"] == "test/noisy"
+    assert "NOISE" not in out
+    assert "make_noise" in parsed["tool_calls"], "the tool never ran, so this proved nothing"
+
+
+def test_the_package_noise_is_kept_not_dropped(tmp_path, monkeypatch, capsys):
+    """Redirected to stderr, not discarded — a package's own diagnostics are the
+    reason someone printed them."""
+    ref = _noisy_package(tmp_path, at_import="IMPORT-TIME NOISE", in_tool="TOOL-TIME NOISE")
+    _fake(monkeypatch, tool_reply("make_noise", {"text": "hi"}), text_reply("done"))
+
+    cli.main(["run", ref, "task", "--no-dotenv", "--json"])
+    err = capsys.readouterr().err
+    assert "IMPORT-TIME NOISE" in err
+    assert "TOOL-TIME NOISE" in err
+
+
+def test_json_survives_a_stdout_that_cannot_encode_it(example, monkeypatch, capsys):
+    """`ensure_ascii=False` raised UnicodeEncodeError on a non-UTF-8 stdout, and the
+    traceback exited 1 — the table's "completed; goal not met"."""
+    _fake(monkeypatch, *GOOD)
+    cli.main(["run", example, "caf\u00e9 \u2615", "--no-dotenv", "--json"])
+    out = capsys.readouterr().out
+
+    out.encode("ascii")  # raises if a raw non-ASCII character reached stdout
+    assert json.loads(out)["task"] == "caf\u00e9 \u2615"
+
+
+# --- every exit path still emits the object ----------------------------------
+
+
+def test_a_check_that_raises_reports_the_cost_it_already_incurred(
+    tmp_path, monkeypatch, capsys
+):
+    """A check is ordinary Python from the package, so it can raise. It did so
+    *outside* `loop.run`'s try, which threw away the ledger for a model call that had
+    already been paid for, and left `--json` with an empty stdout."""
+    root = tmp_path / "boom"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: test/boom\nversion: 0.1.0\ndescription: a check that raises.\n"
+        "model:\n  primary: gpt-5-mini\ninstructions: prompts/system.md\n"
+        "goal:\n  description: never decided.\n  checks: [explodes]\n"
+        "budget:\n  default_usd: 0.5\n",
+        encoding="utf-8",
+    )
+    (root / "checks.py").write_text(
+        "from teacup_run import check\n"
+        "@check\n"
+        "def explodes(attempt):\n"
+        "    raise RuntimeError('check blew up')\n",
+        encoding="utf-8",
+    )
+    _fake(monkeypatch, text_reply("an answer worth paying for"))
+
+    code = cli.main(["run", str(root), "task", "--no-dotenv", "--json"])
+    d = json.loads(capsys.readouterr().out)
+
+    assert code == EXIT_ERROR
+    assert d["stopped"]["kind"] == "error"
+    assert "check blew up" in d["stopped"]["reason"]
+    assert d["cost"]["total"] > 0, "the model call was paid for; the ledger must say so"
+    assert d["goal"]["met"] is False, "a crashed run must not report its goal as met"
+
+
+def test_an_unhandled_failure_is_three_not_one(example, monkeypatch, capsys):
+    """Anything escaping `_run_command` used to propagate out of `main()`, and the
+    interpreter exits 1 — which §5 defines as "completed; goal not met"."""
+    def explode(*a, **k):
+        raise RuntimeError("something nobody anticipated")
+
+    monkeypatch.setattr(cli, "_preflight", explode)
+    assert cli.main(["run", example, "task", "--no-dotenv"]) == EXIT_ERROR
+    assert "something nobody anticipated" in capsys.readouterr().err
+
+
+# --- which hub, §4 -----------------------------------------------------------
+#
+# Three cases, because round 1 shipped two of them and the missing one is the one
+# §4 mandates. `registry.resolve` does `hub = hub or hub_path()`, so passing it any
+# path at all — including one derived from the environment — is what silences the
+# environment. The error message names the directory it looked in, which is what
+# makes the question observable without reaching into internals.
+
+
+def _hub_looked_in(monkeypatch, capsys, **env) -> str:
+    for key, value in env.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    code = cli.main(["run", "only-a-name", "task", "--no-dotenv", "--dry-run"])
+    assert code == EXIT_PREFLIGHT
+    return capsys.readouterr().err
+
+
+def test_the_config_names_the_hub_when_the_environment_does_not(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"hub:\n  path: {tmp_path / 'from-config'}\n", encoding="utf-8")
+    err = _hub_looked_in(monkeypatch, capsys, TEACUP_CONFIG=str(cfg), TEACUP_HOME=None)
+    assert str(tmp_path / "from-config") in err
+
+
+def test_teacup_home_names_the_hub_when_the_config_does_not(tmp_path, monkeypatch, capsys):
+    err = _hub_looked_in(monkeypatch, capsys, TEACUP_HOME=str(tmp_path / "from-env"))
+    assert str(tmp_path / "from-env" / "agents") in err
+
+
+def test_teacup_home_wins_when_both_are_set(tmp_path, monkeypatch, capsys):
+    """The case §4 states in bold and the case that regressed. It is not academic:
+    §4's own sample config contains `hub: path: ~/.teacup/agents`, so a user who
+    copies the documented example would otherwise point `teacup run` at one directory
+    while `push_to_hub()` — which passes no explicit hub — keeps writing to the other."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(f"hub:\n  path: {tmp_path / 'from-config'}\n", encoding="utf-8")
+    err = _hub_looked_in(
+        monkeypatch, capsys, TEACUP_CONFIG=str(cfg), TEACUP_HOME=str(tmp_path / "from-env")
+    )
+
+    assert str(tmp_path / "from-env" / "agents") in err
+    assert "from-config" not in err
+
+
+def test_teacup_home_expands_a_tilde(monkeypatch):
+    """It arrives as text from a shell profile or a .env, where `~` is ordinary. Without
+    expanduser a literal `~` directory gets created under the cwd."""
+    from teacup_run import registry
+
+    monkeypatch.setenv("TEACUP_HOME", "~/.teacup")
+    assert registry.hub_path() == Path.home() / ".teacup" / "agents"
+
+
 def test_the_config_budget_beats_the_packages_own(example, monkeypatch, capsys, tmp_path):
     """§4's precedence, and the half that is easy to get backwards. The person who owns
     the machine caps what a downloaded package may spend; a package declaring $5 must
@@ -413,9 +610,16 @@ def test_a_quoted_placeholder_is_still_a_placeholder(example, monkeypatch):
 
 
 def test_the_model_flag_reaches_the_run(example, monkeypatch, capsys):
-    """Untested until now, and the flag whose absence made the provider fake fail open."""
-    _fake(monkeypatch, *GOOD)
+    """Asserting the JSON's `model` field alone did *not* test this: that field is
+    `Preflight.model`, i.e. `args.model` echoed straight back. Deleting
+    `agent.set_model(model)` from the CLI left the whole suite green. So assert on the
+    name the provider was actually called with, and keep the echo assertion beside it
+    — a report that disagrees with the run is the bug this pair exists to catch."""
+    calls = _fake(monkeypatch, *GOOD)
     cli.main(["run", example, "notes", "--no-dotenv", "--json", "--model", "claude-opus-5"])
+
+    assert calls.models, "the model was never called"
+    assert set(calls.models) == {"claude-opus-5"}
     assert json.loads(capsys.readouterr().out)["model"] == "claude-opus-5"
 
 
@@ -467,14 +671,68 @@ def test_a_config_env_file_that_is_absent_is_not_fatal(example, tmp_path, monkey
     assert "absent.env" in capsys.readouterr().err  # said, not silently ignored
 
 
+def test_a_ceiling_is_exit_two_whichever_backend_hit_it(tmp_path, monkeypatch, capsys):
+    """The same manifest must not change exit code because of its `framework:` key.
+
+    A wall-clock deadline is `BudgetExceeded` and exit 2 on the native loop; through the
+    external backend the child's `out_of_time` was flattened into "error" and exited 3.
+    §5 splits the codes as "ran out of an allowance you set" (2) versus "something
+    broke" (3), and a deadline is the first on both paths.
+    """
+    from teacup_run import external_cli
+    from teacup_run.sandbox import SandboxResult
+
+    monkeypatch.setattr(
+        external_cli,
+        "run_sandboxed",
+        lambda *a, **k: SandboxResult(
+            elapsed_s=0.0,
+            limits_applied=True,
+            timed_out=False,
+            returncode=1,
+            stdout=json.dumps({"status": "out_of_time", "answer": "", "remaining_budget": 0.0}),
+            stderr="",
+        ),
+    )
+    external = cli.main(
+        ["run", str(REPO_ROOT / "examples/teacup-agent-bridge"), "task", "--no-dotenv"]
+    )
+
+    # The native half of the same claim, so this asserts agreement rather than one
+    # backend's behaviour in isolation.
+    _fake(monkeypatch, *GOOD)
+    native = cli.main(
+        ["run", str(REPO_ROOT / EXAMPLE), "notes", "--no-dotenv", "--budget", "0.0000001"]
+    )
+
+    assert external == EXIT_BUDGET
+    assert native == EXIT_BUDGET
+
+
 @pytest.mark.parametrize(
     "sandbox_kwargs, expect_kind",
     [
         ({"timed_out": True, "returncode": None, "stdout": "", "stderr": ""}, "error"),
         ({"timed_out": False, "returncode": 2, "stdout": "", "stderr": "boom"}, "error"),
         ({"timed_out": False, "returncode": 0, "stdout": "not json", "stderr": ""}, "error"),
+        # The four the *child* reports. Round 1 parametrized only the three pre-payload
+        # sites above, so the `status` mapping — the half that has to tell a ceiling
+        # from a crash — had no test at all: rewriting it to `"error"` for everything
+        # left the whole suite green.
+        ({"timed_out": False, "returncode": 1, "stdout": '{"status": "out_of_budget", "answer": "", "remaining_budget": 0.0}', "stderr": ""}, "budget"),
+        ({"timed_out": False, "returncode": 1, "stdout": '{"status": "out_of_time", "answer": "", "remaining_budget": 0.0}', "stderr": ""}, "budget"),
+        ({"timed_out": False, "returncode": 1, "stdout": '{"status": "max_steps", "answer": "", "remaining_budget": 0.0}', "stderr": ""}, "budget"),
+        ({"timed_out": False, "returncode": 1, "stdout": '{"status": "error", "answer": "", "remaining_budget": 0.0}', "stderr": ""}, "error"),
     ],
-    ids=["timed out", "crashed", "unparsable json"],
+    ids=[
+        "timed out",
+        "crashed",
+        "unparsable json",
+        "child out_of_budget",
+        "child out_of_time",
+        "child max_steps",
+        "child error",
+    ],
 )
 def test_every_early_stop_from_the_external_backend_says_why(
     monkeypatch, tmp_path, sandbox_kwargs, expect_kind
@@ -498,3 +756,114 @@ def test_every_early_stop_from_the_external_backend_says_why(
 
     assert result.stopped_early is True
     assert result.stop_kind == expect_kind, result.stop_reason
+
+
+# --- fixes that round 2 found had shipped without a test ---------------------
+
+
+def test_a_usage_error_is_four_not_two(example, capsys):
+    """argparse exits 2 for a bad flag and §5 reserves 2 for "budget exceeded", so a CI
+    job branching on the code read a typo as an overspend. Untested until now, which is
+    how it would have come back."""
+    assert cli.main(["run", example, "task", "--nope"]) == EXIT_PREFLIGHT
+
+
+def test_help_still_exits_zero(capsys):
+    """The remap must not catch `--help`, which argparse also raises SystemExit for."""
+    assert cli.main(["--help"]) == EXIT_OK
+
+
+def test_a_typo_in_a_config_key_is_refused(example, tmp_path, monkeypatch, capsys):
+    """It failed permissively: `defualts:` was dropped, the user believed spend was
+    capped at five cents, and the downloaded package's own ceiling applied instead."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defualts:\n  budget_usd: 0.05\n", encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+
+    assert cli.main(["run", example, "task", "--no-dotenv"]) == EXIT_PREFLIGHT
+    err = capsys.readouterr().err
+    assert "defualts" in err and "defaults" in err  # names it, and names the real one
+
+
+def test_a_typo_inside_a_section_is_refused_too(example, tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defaults:\n  budget_usdd: 0.05\n", encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+
+    assert cli.main(["run", example, "task", "--no-dotenv"]) == EXIT_PREFLIGHT
+    assert "defaults.budget_usdd" in capsys.readouterr().err
+
+
+def test_every_documented_config_key_is_accepted(example, tmp_path, monkeypatch):
+    """The other half of strictness: the allowlist must not have missed a real key."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "env_file: /nonexistent/.env\n"
+        "defaults:\n  budget_usd: 0.02\n  model: gpt-5-mini\n"
+        f"hub:\n  path: {tmp_path / 'hub'}\n  auto_pull: false\n"
+        "output:\n  ledger: true\n  json: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+    _fake(monkeypatch, *GOOD)
+
+    assert cli.main(["run", example, "notes", "--no-dotenv"]) == EXIT_OK
+
+
+def test_a_flag_that_cannot_take_effect_is_refused(monkeypatch, capsys):
+    """`--no-goal-loop` is a native-loop concept; the external backend runs its own
+    loop and dropped the flag silently, doing the opposite of what was asked."""
+    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
+    code = cli.main(["run", bridge, "task", "--no-dotenv", "--dry-run", "--no-goal-loop"])
+
+    assert code == EXIT_PREFLIGHT
+    assert "--no-goal-loop" in capsys.readouterr().err
+
+
+def test_dry_run_checks_the_external_wiring_it_claims_to_have_checked(
+    tmp_path, monkeypatch, capsys
+):
+    """§6's promise is "wired correctly and configured to run it". For a bridge package
+    it checked none of the external path, so a manifest with no `project_root` passed
+    dry-run with exit 0 and then failed the real run."""
+    root = tmp_path / "bridge"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("unused", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: test/bridge\nversion: 0.1.0\ndescription: no project_root.\n"
+        "framework: teacup-agent-cli\nentrypoint: uv run teacup-agent\n"
+        "model:\n  primary: gpt-5\ninstructions: prompts/system.md\n"
+        "budget:\n  default_usd: 0.05\n",
+        encoding="utf-8",
+    )
+
+    code = cli.main(["run", str(root), "task", "--no-dotenv", "--dry-run"])
+    assert code == EXIT_PREFLIGHT
+    assert "project_root" in capsys.readouterr().err
+
+
+def test_a_manifest_asking_for_more_than_the_built_in_default_says_so(
+    tmp_path, monkeypatch, capsys
+):
+    """`DEFAULT_BUDGET_USD` is a fallback, not a cap: with no config file there is
+    nothing for §4's chain to override, so a downloaded manifest's ceiling applies as
+    written. That is the documented chain; being told is the least it can do."""
+    root = tmp_path / "pricey"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: test/pricey\nversion: 0.1.0\ndescription: expensive.\n"
+        "model:\n  primary: gpt-5-mini\ninstructions: prompts/system.md\n"
+        "budget:\n  default_usd: 999.0\n",
+        encoding="utf-8",
+    )
+    _fake(monkeypatch, text_reply("done"))
+
+    cli.main(["run", str(root), "task", "--no-dotenv"])
+    err = capsys.readouterr().err
+    assert "999.00" in err and "--budget" in err
+
+
+def test_an_empty_ref_is_refused(capsys):
+    """`Path("")` is `.`, so it quietly ran whatever agent was in the cwd."""
+    assert cli.main(["run", "", "task", "--no-dotenv"]) == EXIT_PREFLIGHT

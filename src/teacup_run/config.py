@@ -18,11 +18,13 @@ none.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import registry
 
 __all__ = ["Config", "load_config", "config_path"]
 
@@ -47,6 +49,11 @@ class Config:
     # always honoured TEACUP_HOME and appends the `agents` segment. Reimplementing it
     # here read TEACUP_HOME only when a config file existed, dropped that segment, and
     # so pointed the CLI at a directory the library would never publish into.
+    #
+    # This field is what the *config file* asked for. It is not what to use — read it
+    # through `effective_hub()`, which applies §4's precedence. Passing this straight
+    # to `registry.resolve` was the round-2 regression: `hub = hub or hub_path()` means
+    # a non-None value stops TEACUP_HOME from ever being consulted.
     hub_path: Path | None = None
     auto_pull: bool = False
     ledger: bool = True
@@ -88,6 +95,19 @@ def load_config(explicit: str | Path | None = None) -> Config:
     hub = _mapping(raw, "hub")
     output = _mapping(raw, "output")
 
+    # Strict, and strict *now*: this format ships in this PR, so there are no configs
+    # in the wild for it to break, and it is free today and expensive in three months.
+    #
+    # A dropped key always fails permissively, which is the direction that matters
+    # here: `defualts:\n  budget_usd: 0.05` left the user believing their machine caps
+    # spend at five cents while a downloaded package's own ceiling — whatever it says —
+    # applied instead. A settings file whose whole job is to constrain what someone
+    # else's code may spend cannot silently ignore the constraint.
+    _reject_unknown(path, raw, _TOP_LEVEL_KEYS, "")
+    _reject_unknown(path, defaults, _DEFAULTS_KEYS, "defaults.")
+    _reject_unknown(path, hub, _HUB_KEYS, "hub.")
+    _reject_unknown(path, output, _OUTPUT_KEYS, "output.")
+
     env_file = raw.get("env_file")
     budget = defaults.get("budget_usd")
 
@@ -106,6 +126,43 @@ def load_config(explicit: str | Path | None = None) -> Config:
         json=bool(output.get("json", False)),
         source=path,
     )
+
+
+def effective_hub(config: Config) -> Path | None:
+    """Which hub directory to use, per §4: `TEACUP_HOME` wins over `hub.path`.
+
+    Returning `None` is how "let `registry.hub_path()` decide" is spelled, because
+    `registry.resolve` does `hub = hub or hub_path()` — so handing it any path at all,
+    including one derived from the environment, is what silences the environment. The
+    env branch therefore returns None rather than `hub_path()`, which looks redundant
+    and is the entire fix.
+
+    §4 says TEACUP_HOME "must keep winning over `hub.path`", and it must: §4's own
+    sample config contains `hub: path: ~/.teacup/agents`, so a user who copies the
+    documented example would otherwise disable TEACUP_HOME for `teacup run` while
+    `push_to_hub()` — which passes no explicit hub — still honours it. Reads and writes
+    would split across two directories, silently.
+    """
+    if os.environ.get(registry.ENV_HOME):
+        return None
+    return config.hub_path
+
+
+_TOP_LEVEL_KEYS = frozenset({"env_file", "defaults", "hub", "output"})
+_DEFAULTS_KEYS = frozenset({"budget_usd", "model"})
+_HUB_KEYS = frozenset({"path", "auto_pull"})
+_OUTPUT_KEYS = frozenset({"ledger", "json"})
+
+
+def _reject_unknown(
+    path: Path, section: dict[str, Any], known: frozenset[str], prefix: str
+) -> None:
+    unknown = sorted(set(section) - known)
+    if not unknown:
+        return
+    named = ", ".join(f"{prefix}{key}" for key in unknown)
+    expected = ", ".join(f"{prefix}{key}" for key in sorted(known))
+    raise ValueError(f"{path}: unknown config key(s): {named}. Known keys: {expected}.")
 
 
 def _mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:

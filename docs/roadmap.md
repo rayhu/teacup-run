@@ -89,10 +89,34 @@ it implies rather than inheriting them by accident: whether a pulled package's `
 runs in-process at all by default, what `--dry-run` may import, and whether the native
 in-process path deserves the sandbox the external path already gets.
 
+**Three concrete escalations, found by review of item 1 and left for this item**
+rather than half-fixed there, because each is a policy decision and not a bug:
+
+1. **`entrypoint:` is executed.** Any `framework:` other than `teacup` routes to
+   `run_external`, which `shlex.split`s the manifest's `entrypoint` string and runs it.
+   No `tools.py` and no network fetch are needed — a manifest alone is enough. Proven
+   during review with `entrypoint: "/bin/sh -c '...'"`, which ran as the user, from a
+   `--json` invocation, and wrote a file. The framework name is validated now, but that
+   changes nothing here: a hostile package simply writes `teacup-agent-cli`.
+2. **`environment.required` is the child's env allowlist.** A package declares the
+   variable names it wants and `_resolve_env` hands exactly those to the subprocess —
+   so a package declaring `AWS_SECRET_ACCESS_KEY` gets it, and preflight *insists* the
+   variable be present before it will run. The mechanism that makes preflight helpful
+   is the one that makes this reachable.
+3. **`teacup_agent.project_root` sets the subprocess cwd** via `spec.root / value`,
+   which `../..` or an absolute path escapes. Not containable without a decision:
+   `examples/teacup-agent-bridge` escapes on purpose, pointing at a sibling checkout.
+
+Manifest-declared paths *inside* the schema — `instructions:`, `read()`, `AGENTS.md` —
+are contained as of the CLI change (`AgentSpec._inside`), because there was no design
+question there: nothing legitimately points outside. These three have one.
+
 **Definition of done**: the document names, for each of the four verbs, what an attacker
 who controls a published package can reach; every default it recommends is either already
-the code's behaviour or has an issue linking to it; and item 1's CLI does not ship a
-`run` that is easier to point at a stranger than the library is.
+the code's behaviour or has an issue linking to it; the three escalations above each have
+a stated answer (allowlist, prompt-on-first-run, sandbox-by-default, or "accepted, and
+here is why"); and item 1's CLI does not ship a `run` that is easier to point at a
+stranger than the library is.
 
 ---
 

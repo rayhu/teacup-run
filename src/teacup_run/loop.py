@@ -113,31 +113,39 @@ def run(
                 max_turns=max_turns,
                 model_fn=model_fn,
             )
+            if not goal_checks:
+                break
+
+            # Inside the try, not after it. A check is ordinary Python written by
+            # whoever wrote the package, so it can raise — and when it did, the
+            # exception escaped `run()` entirely, taking the ledger with it. The model
+            # call had already been paid for; the caller got a traceback and no record
+            # of what it cost. "Cost is reported with the result, never separately."
+            attempt = Attempt(answer=answer, artifacts=artifacts, tool_calls=tuple(called))
+            verdict = evaluate(checks, goal_checks, attempt)
+            rank = (verdict.passed, len(answer.strip()))
+            if best is None or rank > best[0]:
+                best = (rank, answer, verdict)
+
+            if verdict.met or attempts >= max_attempts:
+                answer, verdict = best[1], best[2]
+                break
+
+            prompt = revision_prompt(
+                task, goal_description, answer, verdict, attempts, max_attempts
+            )
         except BudgetExceeded as exc:
             stopped_early, stop_reason, stop_kind = True, exc.reason, "budget"
             answer = _fallback(best, answer, f"The run stopped before finishing: {exc.reason}")
             break
         except Exception as exc:  # noqa: BLE001 - surfaced with the ledger, not swallowed
             stopped_early, stop_reason, stop_kind = True, f"{type(exc).__name__}: {exc}", "error"
+            # Deliberately dropped: if the failure came out of `evaluate`, `verdict`
+            # still holds the *previous* attempt's verdict, and reporting that beside a
+            # crash is how a failed run gets to claim its goal was met.
+            verdict = None
             answer = _fallback(best, answer, f"The run failed: {stop_reason}")
             break
-
-        if not goal_checks:
-            break
-
-        attempt = Attempt(answer=answer, artifacts=artifacts, tool_calls=tuple(called))
-        verdict = evaluate(checks, goal_checks, attempt)
-        rank = (verdict.passed, len(answer.strip()))
-        if best is None or rank > best[0]:
-            best = (rank, answer, verdict)
-
-        if verdict.met or attempts >= max_attempts:
-            answer, verdict = best[1], best[2]
-            break
-
-        prompt = revision_prompt(
-            task, goal_description, answer, verdict, attempts, max_attempts
-        )
 
     ledger.stop_clock()
     return Result(
@@ -201,7 +209,19 @@ def _one_attempt(
                 }
             )
 
-    return reply.text or "The run hit its turn limit before producing an answer."
+    # A ceiling, so it raises like the other ceilings rather than returning.
+    #
+    # Reaching here means the model was *still calling tools* on the last allowed turn:
+    # the loop returns the moment a reply has none. So the run did not finish, and
+    # returning its text as an ordinary answer made `stopped_early` False, which the CLI
+    # reports as exit 0 — a run that ran out of turns telling CI it succeeded. That is
+    # the same defect as an unclassified early stop, one layer down.
+    #
+    # `BudgetExceeded` and not a new exception type, because §5 has exactly one code for
+    # "ran out of an allowance you set" (2) and this is one: `max_tool_calls` and
+    # `deadline_s` already come through here. It also means the external backend's
+    # `max_steps` — the same concept in the child — can map to the same kind.
+    raise BudgetExceeded(f"reached the {max_turns}-turn limit before producing an answer")
 
 
 def _assistant_message(reply: Reply) -> dict[str, Any]:

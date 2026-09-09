@@ -132,6 +132,25 @@ variables (`TEACUP_HOME` already exists and must keep winning over
 `hub.path`), then the config file, then the agent's manifest, then built-in
 defaults.
 
+Two consequences of that order, both found by review after being asserted here and
+not implemented:
+
+- `TEACUP_HOME` beating `hub.path` needs code, not just this sentence.
+  `registry.resolve` does `hub = hub or hub_path()`, so passing it *any* path is what
+  silences the environment — `config.effective_hub()` returns `None` when `TEACUP_HOME`
+  is set, and `None` is how "let the environment decide" is spelled. The sample above
+  is exactly the config that made this matter.
+- Built-in defaults being **last** means `DEFAULT_BUDGET_USD` is a fallback, not a cap.
+  With no config file, a downloaded manifest's `budget.default_usd` applies as written,
+  however large — there is nothing above it in the chain to override it. The CLI prints
+  a note to stderr when a manifest asks for more than the built-in default; capping it
+  outright would be a different rule than this one, and would need changing here first.
+
+Unknown keys in this file are an error, not a shrug. A dropped key fails permissively —
+`defualts: {budget_usd: 0.05}` leaves you believing spend is capped while the package's
+own ceiling applies — and a settings file whose job is to constrain someone else's code
+cannot silently ignore the constraint.
+
 This chain orders *settings*; §3 orders *credentials*. They must not be merged —
 a config file that could set `OPENAI_API_KEY` directly would undo §3.
 
@@ -148,19 +167,25 @@ the terminal, and `teacup run ... --json | jq .cost.total` works.
 |---:|---|
 | 0 | Completed; goal met, or no goal checks declared |
 | 1 | Completed; goal not met |
-| 2 | Stopped early: budget exceeded |
+| 2 | Stopped early: ran out of an allowance you set — dollars, tool calls, turns, or wall clock |
 | 3 | Stopped early: runtime error |
 | 4 | Did not start: bad ref, invalid manifest, or missing environment |
 
-Codes 2 and 3 need a library change. [`loop.py`](../src/teacup_run/loop.py)
-currently collapses both into one string — `BudgetExceeded` sets `stop_reason` to
-`exc.reason`, a generic exception sets it to `f"{type(exc).__name__}: {exc}"` —
-and telling them apart by parsing that string is a smell. `Result` gets a
+Codes 2 and 3 needed a library change. [`loop.py`](../src/teacup_run/loop.py)
+collapsed both into one string — `BudgetExceeded` set `stop_reason` to
+`exc.reason`, a generic exception set it to `f"{type(exc).__name__}: {exc}"` —
+and telling them apart by parsing that string is a smell. `Result` got a
 discriminator:
 
 ```python
 stop_kind: str | None = None   # "budget" | "error" | None
 ```
+
+Both backends must agree on it. A ceiling is 2 whichever loop hit it: the native
+loop raises `BudgetExceeded` for dollars, tool calls, turns and wall clock alike,
+and the external backend maps the child's `out_of_budget` / `out_of_time` /
+`max_steps` to the same kind. Anything else is 3. The failure this prevents is the
+same manifest changing exit code because of its `framework:` key.
 
 ## 6. `--dry-run`
 
@@ -168,6 +193,12 @@ Everything except the model call: resolve, validate, preflight, import `tools.py
 and `checks.py`, build the tool schemas, render the ledger with zeroes. It answers
 "is this package wired correctly and am I configured to run it?" for no key and
 no spend.
+
+For a `framework != "teacup"` package that means the external path too — the
+entrypoint, and that `teacup_agent.project_root` names a directory that exists.
+Checking none of it and still answering "configured to run it" is worse than not
+answering, and it is what shipped first: a manifest missing `project_root` passed
+dry-run with exit 0 and then failed the real run.
 
 It is a wiring check, not a run, and must be described as one — it cannot say
 whether the agent is any good. A recorded or stubbed model (`--replay`, built on
@@ -194,10 +225,11 @@ the existing `model_fn` seam) is a separate feature.
 }
 ```
 
-Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except three:
-`stopped.kind` from §5; `budget.remaining`, which lived only as an expression
-inside `Ledger.render`; and `dry_run`, which is not on `Result` at all because a
-dry run never produces one. Without it `--json --dry-run` is indistinguishable
+Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except one:
+`dry_run`, which is not on `Result` at all because a dry run never produces one.
+(Two others were exceptions when this was written and are not any more —
+`stopped.kind` is a field on `Result` and `budget.remaining` is a method on
+`Budget`, both added by this change.) Without it `--json --dry-run` is indistinguishable
 from a real run that returned an empty answer at zero cost, which is exactly the
 confusion §6 warns about — a wiring check must not be mistakable for a run.
 

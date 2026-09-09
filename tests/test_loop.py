@@ -121,4 +121,11 @@ def test_the_turn_limit_ends_a_tool_loop_that_never_answers():
     )
 
     assert len(result.ledger.model_calls) == 3
-    assert not result.stopped_early
+    # It *is* an early stop, and used not to be. Reaching the limit means the model was
+    # still calling tools on the last allowed turn, so the run never produced an answer
+    # — and reporting that as a completed run made `teacup run` exit 0, telling CI a
+    # run that ran out of turns had succeeded. A ceiling you set is exit 2, the same as
+    # the tool-call limit above.
+    assert result.stopped_early
+    assert result.stop_kind == "budget"
+    assert "3-turn limit" in result.stop_reason

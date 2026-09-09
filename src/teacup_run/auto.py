@@ -167,7 +167,13 @@ class AutoAgent:
         if self.spec.framework != "teacup":
             from .external_cli import run_external
 
-            return run_external(self.spec, task, budget=resolved_budget.usd, live=live)
+            # `model` forwarded, not dropped. It used not to be, and the CLI still
+            # reported the requested name in its preflight echo and its `--json`
+            # object — so `--model` was a silent no-op that the report presented as
+            # fact. Whichever way that is resolved, the two must agree.
+            return run_external(
+                self.spec, task, budget=resolved_budget.usd, live=live, model=self.model
+            )
 
         return run(
             task,

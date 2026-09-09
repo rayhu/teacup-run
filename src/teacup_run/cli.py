@@ -26,6 +26,7 @@ never hold a value — see `config.py`.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from typing import Any
 from . import registry
 from .auto import AutoAgent
 from .budget import Budget, Ledger
-from .config import DEFAULT_BUDGET_USD, Config, load_config
+from .config import DEFAULT_BUDGET_USD, Config, effective_hub, load_config
 from .env import load_env
 from .loop import Result
 from .manifest import AgentSpec, ManifestError
@@ -65,7 +66,6 @@ class Preflight:
     ref: str
     model: str
     budget: Budget
-    env_file: Path | None
     env_source: str
     config: Config
 
@@ -101,7 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help(sys.stderr)
         return EXIT_PREFLIGHT
-    return _run_command(args)
+    try:
+        return _run_command(args)
+    except Exception as exc:  # noqa: BLE001
+        # Without this, an unhandled exception propagates out of main() and the
+        # interpreter exits 1 — which §5 defines as "completed; goal not met". A crash
+        # reported as a well-defined result is the exact confusion the table exists to
+        # prevent, so the catch-all maps to 3 and says what happened.
+        print(f"ERROR: teacup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -128,8 +136,21 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_command(args: argparse.Namespace) -> int:
+    # stdout belongs to teacup; everything the package does goes to stderr.
+    #
+    # §5 promises `--json` puts one object on stdout and *nothing else*, and a package
+    # is ordinary Python: `from_pretrained` imports its `tools.py` and `checks.py`, and
+    # a tool function runs mid-loop. Either can `print`. Left alone, that lands on the
+    # same stream ahead of the object, `jq` fails, and a consumer reading the first line
+    # gets an attacker-chosen one. Both sites need wrapping — covering only the import
+    # makes a module-scope test pass while a printing tool still breaks the contract.
+    #
+    # Unconditional rather than only under `--json`: in human mode the answer is what
+    # stdout is for, and a package's debug chatter interleaved with it is noise there
+    # too. Nothing is lost — it is still on stderr.
     try:
-        pre = _preflight(args)
+        with contextlib.redirect_stdout(sys.stderr):
+            pre = _preflight(args)
     except PreflightError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return EXIT_PREFLIGHT
@@ -149,10 +170,21 @@ def _run_command(args: argparse.Namespace) -> int:
         return _emit(result, pre, task, as_json=as_json, quiet=args.quiet, dry_run=True)
 
     try:
-        result = pre.agent.run(task, budget=pre.budget, goal_loop=not args.no_goal_loop)
+        with contextlib.redirect_stdout(sys.stderr):
+            result = pre.agent.run(task, budget=pre.budget, goal_loop=not args.no_goal_loop)
     except Exception as exc:  # noqa: BLE001 — reported with an exit code, not a traceback
-        print(f"ERROR: the run failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return EXIT_ERROR
+        # §5 promises one JSON object on stdout, and "on every exit path" is the whole
+        # value of that promise: a consumer that has to parse stderr prose to tell
+        # "the tool crashed" from "the agent failed" has no contract at all. This path
+        # printed a stderr line and nothing on stdout. `loop.run` catches its own
+        # failures and keeps the ledger, so what reaches here spent nothing — hence an
+        # empty Ledger rather than a lost one.
+        reason = f"{type(exc).__name__}: {exc}"
+        print(f"ERROR: the run failed: {reason}", file=sys.stderr)
+        failed = Result(
+            answer="", ledger=Ledger(), stopped_early=True, stop_reason=reason, stop_kind="error"
+        )
+        return _emit(failed, pre, task, as_json=as_json, quiet=args.quiet, dry_run=False)
 
     return _emit(result, pre, task, as_json=as_json, quiet=args.quiet, dry_run=False)
 
@@ -174,11 +206,11 @@ def _preflight(args: argparse.Namespace) -> Preflight:
     # previous one established. Resolving the environment first meant a bad env file
     # masked a bad ref, so the message named the wrong problem.
     try:
-        agent = AutoAgent.from_pretrained(args.ref, hub=config.hub_path)
+        agent = AutoAgent.from_pretrained(args.ref, hub=effective_hub(config))
     except (ManifestError, RegistryError, FileNotFoundError, ValueError) as exc:
         raise PreflightError(f"could not load {args.ref!r}: {exc}") from exc
 
-    env_file, env_source = _resolve_environment(args, config)
+    _, env_source = _resolve_environment(args, config)
 
     for skill in args.skill:
         try:
@@ -194,10 +226,35 @@ def _preflight(args: argparse.Namespace) -> Preflight:
             f"Environment came from: {env_source}."
         )
 
+    # Flags that cannot take effect are refused, not ignored. The external backend has
+    # no goal loop and no packaged skills — `AutoAgent.run`'s own docstring says so —
+    # and accepting the flag anyway means the run silently does the opposite of what
+    # was asked. At preflight it costs nothing and names the reason.
+    if agent.spec.framework != "teacup":
+        # §6: dry-run answers "is this wired correctly and am I configured to run it?"
+        # For this framework that answer used to skip the entire external path.
+        from .external_cli import check_wiring
+
+        try:
+            check_wiring(agent.spec)
+        except ManifestError as exc:
+            raise PreflightError(f"could not load {args.ref!r}: {exc}") from exc
+
+        inapplicable = [
+            name
+            for name, given in (("--no-goal-loop", args.no_goal_loop), ("--skill", args.skill))
+            if given
+        ]
+        if inapplicable:
+            raise PreflightError(
+                f"{', '.join(inapplicable)} does not apply to framework "
+                f"{agent.spec.framework!r}, which runs its own loop. Remove the flag."
+            )
+
     model = args.model or config.model or agent.spec.model_primary
     agent.set_model(model)
     budget = _resolve_budget(args, config, agent.spec)
-    return Preflight(agent, args.ref, model, budget, env_file, env_source, config)
+    return Preflight(agent, args.ref, model, budget, env_source, config)
 
 
 def _check_auto_pull(ref: str, config: Config) -> None:
@@ -213,6 +270,10 @@ def _check_auto_pull(ref: str, config: Config) -> None:
     A ref already on disk or already in the hub is not a fetch and is not gated; this
     only stops the first, network-touching resolution.
     """
+    if not ref.strip():
+        # `Path("")` is `.`, so an empty ref quietly resolves to the current directory
+        # and runs whatever agent happens to be sitting in it.
+        raise PreflightError("no agent ref given")
     if config.auto_pull:
         return
     if Path(ref).expanduser().exists():
@@ -221,8 +282,9 @@ def _check_auto_pull(ref: str, config: Config) -> None:
         return  # a hub name: resolve() will look locally and error if it is absent
     raise PreflightError(
         f"{ref} would be fetched from the network, and fetching runs the package's own "
-        "Python. Run `teacup pull` first, or set `hub: {auto_pull: true}` in your "
-        "config to allow it."
+        f"Python. Clone it yourself and pass the path, or set `hub: {{auto_pull: true}}` "
+        f"in your config to allow it. (`teacup pull` is not implemented yet — naming it "
+        f"here would send you to an 'invalid choice' error.)"
     )
 
 
@@ -273,15 +335,32 @@ def _resolve_budget(args: argparse.Namespace, config: Config, spec: AgentSpec) -
     Only the dollar ceiling is overridable here; the tool-call and wall-clock ceilings
     stay the package's own, because a caller who set a budget has said something about
     money and nothing about the other two.
+
+    What this does *not* do, stated so it is a decision rather than an oversight:
+    `DEFAULT_BUDGET_USD` is a fallback, not a cap. With no config file — the first run
+    of a freshly installed tool — a downloaded manifest declaring `budget.default_usd:
+    999.00` applies as written, because §4 puts the manifest above built-in defaults
+    and there is no config for it to override. That is the documented chain, so the
+    code is right and the chain is the thing to argue with; meanwhile the user at least
+    gets told, below, rather than finding out from an invoice.
     """
+    from_manifest = False
     if args.budget is not None:
         usd = args.budget
     elif config.budget_usd is not None:
         usd = config.budget_usd
     elif spec.budget_usd is not None:
-        usd = spec.budget_usd
+        usd, from_manifest = spec.budget_usd, True
     else:
         usd = DEFAULT_BUDGET_USD
+
+    if from_manifest and usd > DEFAULT_BUDGET_USD:
+        print(
+            f"NOTE: {spec.name} asks for a ${usd:,.2f} ceiling, above the built-in "
+            f"${DEFAULT_BUDGET_USD:,.2f}. Nothing on this machine caps it — pass "
+            f"--budget, or set defaults.budget_usd in your config.",
+            file=sys.stderr,
+        )
     return Budget(
         usd=usd,
         max_tool_calls=spec.budget_max_tool_calls,
@@ -316,7 +395,11 @@ def _emit(
 ) -> int:
     code = _exit_code(result, dry_run)
     if as_json:
-        print(json.dumps(_payload(result, pre, task, code, dry_run), ensure_ascii=False))
+        # ensure_ascii=True, deliberately: with False, a task or answer containing a
+        # non-ASCII character raises UnicodeEncodeError on any stdout that is not UTF-8
+        # (PYTHONIOENCODING=ascii, a C-locale container), and the traceback exited 1 —
+        # "completed, goal not met". `\uXXXX` is lossless and every JSON parser reads it.
+        print(json.dumps(_payload(result, pre, task, code, dry_run)))
         return code
 
     if result.answer:

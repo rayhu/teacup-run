@@ -44,6 +44,11 @@ class RegistryError(RuntimeError):
     """A reference could not be resolved, or a package could not be published."""
 
 
+# Named once so `config.effective_hub` can ask "is the environment speaking?" without
+# a second literal drifting from this one.
+ENV_HOME = "TEACUP_HOME"
+
+
 def hub_path() -> Path:
     """Where pulled and published agents live. Override with `TEACUP_HOME`.
 
@@ -53,7 +58,7 @@ def hub_path() -> Path:
     value arrives as text from a shell profile or a `.env` file, where `~` is
     ordinary; without it a literal `~` directory gets created under the cwd.
     """
-    return Path(os.environ.get("TEACUP_HOME", Path.home() / ".teacup")).expanduser() / "agents"
+    return Path(os.environ.get(ENV_HOME, Path.home() / ".teacup")).expanduser() / "agents"
 
 
 def _is_git_url(ref: str) -> bool:

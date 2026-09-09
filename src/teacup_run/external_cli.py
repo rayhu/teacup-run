@@ -68,6 +68,11 @@ _DEFAULT_DEADLINE_S = 600.0  # teacup-agent cli.py's own default
 _GRACE_S = 30.0  # headroom for teacup-agent's own forced wrap-up to finish and print JSON
 
 
+# The child's statuses that mean "ran out of an allowance", as opposed to "broke".
+# Kept beside the mapping rather than inline so the list is visible as a list.
+CEILING_STATUSES = frozenset({"out_of_budget", "out_of_time", "max_steps"})
+
+
 def run_external(
     spec: AgentSpec,
     task: str,
@@ -78,6 +83,7 @@ def run_external(
     target_repo: Path | None = None,
     extra_flags: Sequence[str] = (),
     run_dir: Path | None = None,
+    model: str | None = None,
 ) -> Result:
     """Run `spec` (a `framework != "teacup"` package) as a sandboxed subprocess,
     normalizing its output into teacup-run's own `Result`.
@@ -126,6 +132,7 @@ def run_external(
         agent_run_dir = run_dir if run_dir is not None else scratch_dir / "runs"
         argv = _build_argv(
             spec.entrypoint or "uv run teacup-agent",
+            model=model,
             project_root=project_root,
             task=task,
             budget=budget_usd,
@@ -176,12 +183,14 @@ def run_external(
 
     done = payload.get("status") == "done"
     status = payload.get("status")
-    # The child reports max_steps / out_of_budget / out_of_time / error. §5's table has
-    # only two kinds, so out_of_budget maps to "budget" and everything else to "error".
-    # That flattens max_steps and out_of_time into "error", which is imprecise but is
-    # the safe direction: both are non-zero, and the alternative — leaving stop_kind
-    # None — made `teacup run` exit 0 for a run that never finished.
-    stop_kind = None if done else ("budget" if status == "out_of_budget" else "error")
+    # The child reports max_steps / out_of_budget / out_of_time / error, and §5 splits
+    # those two ways: 2 is "ran out of an allowance you set", 3 is "something broke".
+    # All three ceilings are the first. Flattening max_steps and out_of_time into
+    # "error" was defended as the safe direction, but it made the same manifest report
+    # a different exit code depending only on its `framework:` key — a wall-clock
+    # deadline is `BudgetExceeded` and exit 2 on the native loop and was exit 3 here.
+    # Anything unrecognised stays "error": an unknown status is not a known ceiling.
+    stop_kind = None if done else ("budget" if status in CEILING_STATUSES else "error")
     return Result(
         answer=payload.get("answer", ""),
         ledger=ledger,
@@ -189,6 +198,27 @@ def run_external(
         stop_reason=None if done else status,
         stop_kind=stop_kind,
     )
+
+
+def check_wiring(spec: AgentSpec) -> None:
+    """Everything about a `framework != "teacup"` package that can be checked without
+    launching it. Raises `ManifestError` naming the first thing that is wrong.
+
+    `--dry-run`'s promise is "the package is wired correctly and this machine is
+    configured to run it" (§6), and for this framework it checked none of that path:
+    a manifest with no `teacup_agent.project_root` passed dry-run and exited 0, then
+    failed the real run with a ManifestError. A wiring check that skips the wiring is
+    worse than none, because it answers.
+    """
+    root = _project_root(spec)
+    if not root.is_dir():
+        raise ManifestError(
+            f"{spec.name}: teacup_agent.project_root points at {root}, which is not a "
+            "directory"
+        )
+    entrypoint = spec.entrypoint or "uv run teacup-agent"
+    if not shlex.split(entrypoint):
+        raise ManifestError(f"{spec.name}: entrypoint is empty")
 
 
 def _project_root(spec: AgentSpec) -> Path:
@@ -218,6 +248,7 @@ def _resolve_env(spec: AgentSpec) -> dict[str, str]:
 def _build_argv(
     entrypoint: str,
     *,
+    model: str | None,
     project_root: Path,
     task: str,
     budget: float,
@@ -244,6 +275,10 @@ def _build_argv(
     ]
     if live:
         argv.append("--live")
+    if model:
+        # The child takes `--model`; without this the override reached nothing and the
+        # run used the child's own default while the report named the requested one.
+        argv += ["--model", model]
     argv += list(extra_flags)
     return argv
 

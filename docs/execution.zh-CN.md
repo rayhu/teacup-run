@@ -2,8 +2,7 @@
 
 **状态：** 已实现（2026-09-08）。本文件仍是设计文档；若它与
 `src/teacup_run/cli.py` 不一致，先改本文件，再改代码。
-**注意：** 英文版 [execution.md](execution.md) 是原稿，两者冲突时以英文版为准；
-§9 的两个开放问题已在英文版中回答。
+**注意：** 英文版 [execution.md](execution.md) 是原稿，两者冲突时以英文版为准。
 **范围：** `teacup run` 的设计。它所实现的那条规则 —— 执行一个 agent 不应该需要写
 Python —— 写在 [README](../README.zh-CN.md) 里。
 **翻译：** 本文是 [execution.md](execution.md) 的中文版。英文版为原文，两者不一致时以
@@ -179,6 +178,7 @@ stop_kind: str | None = None   # "budget" | "error" | None
   "usage":   {"input_tokens": 1840, "output_tokens": 220, "cached_input_tokens": 0},
   "budget":  {"usd": 0.25, "remaining": 0.2169},
   "stopped": {"early": false, "kind": null, "reason": null},
+  "dry_run": false,
   "elapsed_s": 7.4,
   "exit_code": 0
 }
@@ -197,7 +197,7 @@ stop_kind: str | None = None   # "budget" | "error" | None
 | 3 | `Budget.remaining(ledger)` —— 从 `Ledger.render` 里提出来 | `src/teacup_run/budget.py` |
 | 4 | 让 `load_env` 的 cwd 搜索可被跳过；它本来就接受显式路径、也本来就返回实际使用的文件，preflight 直接回显该返回值 | `src/teacup_run/env.py` |
 | 5 | 配置加载器：读取、默认值、优先级（§4） | `src/teacup_run/config.py` *(新增)* |
-| 6 | 从 `AgentSpec` 中删掉没人用的 `entrypoint` 字段 | `src/teacup_run/manifest.py` |
+| 6 | ~~从 `AgentSpec` 中删掉没人用的 `entrypoint` 字段~~ —— **已作废**：该字段保留下来并改作他用，成为非原生 framework（`framework != "teacup"`）后端的基础命令。见 `docs/backends.md` 与 `src/teacup_run/external_cli.py` | `src/teacup_run/manifest.py` |
 | 7 | `cli.py`：参数解析、preflight、运行、渲染、退出码、`--json` | `src/teacup_run/cli.py` *(新增)* |
 | 8 | `[project.scripts] teacup = "teacup_run.cli:main"` | `pyproject.toml` |
 | 9 | `.env.example`，只有变量名、没有值 | 仓库根目录 |
@@ -210,9 +210,12 @@ stop_kind: str | None = None   # "budget" | "error" | None
 测试沿用现有的 `model_fn` 接缝，所以整套 CLI 测试无需 key、不产生花费，和现有测试套件
 一致。
 
-## 9. 开放问题
+## 9. 开放问题（已回答）
 
-1. **`run` 遇到未解析的 ref 时应该自动 pull 吗？** 还是要求先跑 `teacup pull`？
-   自动 pull 更友好；显式 pull 则意味着 `run` 永远不会自己去访问网络。
-2. **「goal 未达成」用退出码 1**，会把一次诚实完成、没超预算的运行判成失败。对 CI 来说
-   是对的，交互使用时可能意外。保持原样，还是放到 `--strict` 后面？
+1. **`run` 遇到未解析的 ref 时应该自动 pull 吗？** —— **不自动**，默认如此。
+   `registry.resolve` 会 clone 一个 git URL，`from_pretrained` 紧接着 import 那个 clone
+   的 `tools.py`：一条命令就把陌生人的 Python 取下来并执行，`--dry-run` 也一样。
+   `hub.auto_pull: true` 可以打开它；默认关闭，意味着 `run` 不会自己去访问网络。
+2. **「goal 未达成」用退出码 1**：**保持原样**。声明了 checks 却没通过的 agent，对
+   调用方来说就是没做到它答应的事；这正是退出码存在的意义。没有声明 checks 的
+   package 不受影响 —— 它得到的是「goal met，或没有 goal checks」，即退出码 0。
