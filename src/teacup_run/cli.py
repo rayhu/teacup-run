@@ -64,7 +64,9 @@ class Preflight:
 
     agent: AutoAgent
     ref: str
-    model: str
+    # None when a non-native framework picks its own model: naming one we did not
+    # choose is what the round-2 review found reported as fact. §7 allows null.
+    model: str | None
     budget: Budget
     env_source: str
     config: Config
@@ -76,7 +78,7 @@ class Preflight:
         budget = "unlimited" if self.budget.usd is None else f"${self.budget.usd:,.2f}"
         lines = [
             f"agent   {spec.name} {spec.version}  ({self.ref})",
-            f"model   {self.model}",
+            f"model   {self.model or f'(whatever {spec.framework} is configured to use)'}",
             f"budget  {budget}",
             f"tools   {tools}",
             f"skills  {skills}",
@@ -136,7 +138,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    # stdout belongs to teacup; everything the package does goes to stderr.
+    # stdout belongs to teacup; what the package `print`s goes to stderr.
+    #
+    # The limit, stated rather than implied: `redirect_stdout` rebinds `sys.stdout`, so
+    # a package writing to fd 1 directly (`os.write`, `sys.__stdout__`, a C extension,
+    # its own uncaptured subprocess) still reaches the real stream. That is not the
+    # case this closes. `run_sandboxed` captures the external backend's child, so the
+    # bridge path is covered by a different mechanism.
     #
     # §5 promises `--json` puts one object on stdout and *nothing else*, and a package
     # is ordinary Python: `from_pretrained` imports its `tools.py` and `checks.py`, and
@@ -173,10 +181,14 @@ def _run_command(args: argparse.Namespace) -> int:
         with contextlib.redirect_stdout(sys.stderr):
             result = pre.agent.run(task, budget=pre.budget, goal_loop=not args.no_goal_loop)
     except Exception as exc:  # noqa: BLE001 — reported with an exit code, not a traceback
-        # §5 promises one JSON object on stdout, and "on every exit path" is the whole
-        # value of that promise: a consumer that has to parse stderr prose to tell
-        # "the tool crashed" from "the agent failed" has no contract at all. This path
-        # printed a stderr line and nothing on stdout. `loop.run` catches its own
+        # §5 promises one JSON object on stdout, and a consumer that has to parse stderr
+        # prose to tell "the tool crashed" from "the agent failed" has no contract at
+        # all. This path printed a stderr line and nothing on stdout.
+        #
+        # Not *every* exit path, and the exception is deliberate: a preflight failure
+        # (exit 4) still prints nothing on stdout, because nothing was resolved yet —
+        # there is no agent, no budget and no ledger to describe, and inventing an
+        # object full of nulls would be a worse contract than none. `loop.run` catches its own
         # failures and keeps the ledger, so what reaches here spent nothing — hence an
         # empty Ledger rather than a lost one.
         reason = f"{type(exc).__name__}: {exc}"
@@ -212,11 +224,6 @@ def _preflight(args: argparse.Namespace) -> Preflight:
 
     _, env_source = _resolve_environment(args, config)
 
-    for skill in args.skill:
-        try:
-            agent.add_skill(skill)
-        except Exception as exc:  # noqa: BLE001
-            raise PreflightError(f"could not enable skill {skill!r}: {exc}") from exc
 
     missing = agent.spec.missing_environment()
     if missing:
@@ -251,8 +258,33 @@ def _preflight(args: argparse.Namespace) -> Preflight:
                 f"{agent.spec.framework!r}, which runs its own loop. Remove the flag."
             )
 
-    model = args.model or config.model or agent.spec.model_primary
-    agent.set_model(model)
+    # After the framework refusal above, not before: run first, `--skill foo` against a
+    # bridge package raised "could not enable skill 'foo'" — true, but naming the wrong
+    # problem, and the reason the flag can never work is the thing worth saying.
+    for skill in args.skill:
+        try:
+            agent.add_skill(skill)
+        except Exception as exc:  # noqa: BLE001
+            raise PreflightError(f"could not enable skill {skill!r}: {exc}") from exc
+
+    # The override only. `set_model` used to be handed the fully resolved value —
+    # including `spec.model_primary` when nobody asked for anything — and `auto.run`
+    # forwards `self.model` to the external backend as `--model`. So every bridge run
+    # started forcing the manifest's model onto the child, from a field that manifest
+    # declares "informational only for this framework — the model that actually answers
+    # is whatever the target checkout is configured to use". Fixing "the report names a
+    # model that never ran" by making the wrong model run is not a fix.
+    override = args.model or config.model
+    if override:
+        agent.set_model(override)
+
+    # What to *report*. For the native loop the resolved model is the truth. For a
+    # framework that picks its own, `None` is the truth, and §7 says so — a consumer
+    # reading a name we invented is the failure this whole finding was about.
+    if override or agent.spec.framework == "teacup":
+        model = override or agent.spec.model_primary
+    else:
+        model = None
     budget = _resolve_budget(args, config, agent.spec)
     return Preflight(agent, args.ref, model, budget, env_source, config)
 
@@ -437,7 +469,11 @@ def _payload(result: Result, pre: Preflight, task: str, code: int, dry_run: bool
             # completion did meet its (empty) goal — that is the exit table's "goal met,
             # or no goal checks declared". A run that stopped early has no verdict
             # because it never got one, which is not the same as passing.
-            "met": goal.met if goal else not result.stopped_early,
+            # `dry_run` first: a wiring check evaluates nothing, and a consumer keying
+            # on `goal.met` would otherwise read it as a pass. `dry_run: true` sits
+            # beside it, but a field that is only safe when read with another field is
+            # the shape of report this round kept finding.
+            "met": False if dry_run else (goal.met if goal else not result.stopped_early),
             "checks": dict(goal.checks) if goal else {},
             "failed": list(goal.failed) if goal else [],
             "reasons": list(goal.reasons) if goal else [],

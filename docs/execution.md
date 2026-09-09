@@ -167,7 +167,7 @@ the terminal, and `teacup run ... --json | jq .cost.total` works.
 |---:|---|
 | 0 | Completed; goal met, or no goal checks declared |
 | 1 | Completed; goal not met |
-| 2 | Stopped early: ran out of an allowance you set — dollars, tool calls, turns, or wall clock |
+| 2 | Stopped early: ran out of an allowance — dollars, tool calls, turns, or wall clock; whether you set it or it is the built-in default |
 | 3 | Stopped early: runtime error |
 | 4 | Did not start: bad ref, invalid manifest, or missing environment |
 
@@ -209,7 +209,7 @@ the existing `model_fn` seam) is a separate feature.
 ```json
 {
   "agent":   {"name": "teacup/note-taker", "version": "0.1.0", "ref": "examples/note-taker"},
-  "model":   "gpt-5-mini",
+  "model":   "gpt-5-mini",          // null when the framework picks its own
   "task":    "Notes: ...",
   "answer":  "Action items\n- Ray: ...",
   "goal":    {"met": true, "checks": {"non_empty": true}, "failed": [], "reasons": []},
@@ -224,6 +224,13 @@ the existing `model_fn` seam) is a separate feature.
   "exit_code": 0
 }
 ```
+
+`model` is the *resolved* model for the native loop, and `null` for a framework that
+chooses its own — `framework: teacup-agent-cli` runs whatever the target checkout is
+configured to use, so naming the manifest's `model.primary` there would be reporting a
+model that never ran. A `--model` override is forwarded and reported on both paths.
+
+`goal.met` is `false` for a `--dry-run`, which evaluated nothing.
 
 Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except one:
 `dry_run`, which is not on `Result` at all because a dry run never produces one.

@@ -18,6 +18,7 @@ from teacup_run.manifest import AgentSpec
 from teacup_run.cli import EXIT_BUDGET, EXIT_ERROR, EXIT_GOAL_NOT_MET, EXIT_OK, EXIT_PREFLIGHT
 
 from conftest import text_reply, tool_reply
+from teacup_run.model import Reply
 
 EXAMPLE = "examples/note-taker"
 
@@ -887,3 +888,109 @@ def test_a_failure_outside_the_loop_still_emits_the_json_object(example, monkeyp
     assert d["stopped"]["kind"] == "error"
     assert "backend exploded" in d["stopped"]["reason"]
     assert d["goal"]["met"] is False
+
+
+# --- round 3: what the round-2 fixes themselves got wrong ---------------------
+
+
+def _bridge_argv(monkeypatch, argv_list):
+    """Run the bridge package with the sandbox faked, and hand back the child's argv."""
+    from teacup_run import external_cli
+    from teacup_run.sandbox import SandboxResult
+
+    seen = {}
+
+    def fake(argv, **kwargs):
+        seen["argv"] = argv
+        return SandboxResult(
+            elapsed_s=0.0,
+            limits_applied=True,
+            timed_out=False,
+            returncode=0,
+            stdout=json.dumps({"status": "done", "answer": "x", "remaining_budget": 0.05}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(external_cli, "run_sandboxed", fake)
+    code = cli.main(argv_list)
+    return seen.get("argv", []), code
+
+
+def test_no_model_flag_means_the_target_picks_its_own(monkeypatch, capsys):
+    """Forwarding the *resolved* model made every bridge run force the manifest's
+    `model.primary` onto the child — a field that manifest calls "informational only
+    for this framework", because the target checkout has its own configuration. So
+    "the report named a model that never ran" would have been fixed by making the
+    wrong model run."""
+    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
+    argv, code = _bridge_argv(monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json"])
+
+    assert code == EXIT_OK
+    assert "--model" not in argv
+    assert json.loads(capsys.readouterr().out)["model"] is None
+
+
+def test_an_explicit_model_override_does_reach_the_target(monkeypatch, capsys):
+    """The other half: asked for, so it is forwarded, and reported because it is true."""
+    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
+    argv, code = _bridge_argv(
+        monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json", "--model", "claude-opus-5"]
+    )
+
+    assert code == EXIT_OK
+    assert argv[argv.index("--model") + 1] == "claude-opus-5"
+    assert json.loads(capsys.readouterr().out)["model"] == "claude-opus-5"
+
+
+def test_skill_on_a_bridge_package_names_the_real_reason(capsys):
+    """The refusal ran *after* `add_skill`, so `--skill foo` reported "could not enable
+    skill 'foo'" — true, and the wrong problem."""
+    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
+    code = cli.main(["run", bridge, "t", "--no-dotenv", "--dry-run", "--skill", "anything"])
+
+    err = capsys.readouterr().err
+    assert code == EXIT_PREFLIGHT
+    assert "does not apply to framework" in err
+    assert "could not enable skill" not in err
+
+
+def test_a_dry_run_does_not_report_a_goal_it_never_evaluated(example, capsys):
+    """`Result(answer="", ledger=Ledger())` is not stopped early, so `met` came out
+    true for a wiring check. `dry_run: true` disambiguates only for a consumer who
+    thought to read it."""
+    assert cli.main(["run", example, "t", "--no-dotenv", "--dry-run", "--json"]) == EXIT_OK
+    d = json.loads(capsys.readouterr().out)
+    assert d["dry_run"] is True
+    assert d["goal"]["met"] is False
+
+
+def test_the_turn_limit_keeps_the_text_the_model_had_produced():
+    """Making the turn limit an early stop must not quietly move a benchmark number:
+    `evaluate.score` reads keywords out of `answer`, and the pre-change behaviour
+    returned the last reply's text."""
+    from teacup_run.loop import run
+    from conftest import FakeModel
+
+    replies = [tool_reply("save_action_item", {"what": "w", "owner": "o"}) for _ in range(5)]
+    replies[-1] = Reply(
+        text="a partial thought worth keeping",
+        tool_calls=replies[-1].tool_calls,
+        usage=replies[-1].usage,
+    )
+    model = FakeModel(*replies)
+
+    from teacup_run.auto import AutoAgent
+
+    agent = AutoAgent.from_pretrained(str(REPO_ROOT / EXAMPLE))
+    result = run(
+        "task",
+        model="gpt-5",
+        instructions="",
+        tools=agent.tools,
+        max_turns=5,
+        model_fn=model,
+    )
+
+    assert result.stopped_early
+    assert result.stop_kind == "budget"
+    assert "a partial thought worth keeping" in result.answer

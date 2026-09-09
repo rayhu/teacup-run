@@ -136,7 +136,8 @@ def run(
             )
         except BudgetExceeded as exc:
             stopped_early, stop_reason, stop_kind = True, exc.reason, "budget"
-            answer = _fallback(best, answer, f"The run stopped before finishing: {exc.reason}")
+            partial = getattr(exc, "partial_answer", "") or answer
+            answer = _fallback(best, partial, f"The run stopped before finishing: {exc.reason}")
             break
         except Exception as exc:  # noqa: BLE001 - surfaced with the ledger, not swallowed
             stopped_early, stop_reason, stop_kind = True, f"{type(exc).__name__}: {exc}", "error"
@@ -221,7 +222,13 @@ def _one_attempt(
     # "ran out of an allowance you set" (2) and this is one: `max_tool_calls` and
     # `deadline_s` already come through here. It also means the external backend's
     # `max_steps` — the same concept in the child — can map to the same kind.
-    raise BudgetExceeded(f"reached the {max_turns}-turn limit before producing an answer")
+    exc = BudgetExceeded(f"reached the {max_turns}-turn limit before producing an answer")
+    # Carried, not discarded. Before this became an early stop, the last reply's text
+    # was returned as the answer, and `evaluate.py` scores keywords found in it. Making
+    # the stop honest must not quietly move a benchmark number, so the partial text
+    # still reaches `_fallback` — it is just no longer called a completed run.
+    exc.partial_answer = reply.text
+    raise exc
 
 
 def _assistant_message(reply: Reply) -> dict[str, Any]:

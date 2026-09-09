@@ -167,12 +167,22 @@ class AutoAgent:
         if self.spec.framework != "teacup":
             from .external_cli import run_external
 
-            # `model` forwarded, not dropped. It used not to be, and the CLI still
-            # reported the requested name in its preflight echo and its `--json`
-            # object — so `--model` was a silent no-op that the report presented as
-            # fact. Whichever way that is resolved, the two must agree.
+            # An *override* is forwarded; the manifest's own value is not.
+            #
+            # `--model` used to reach nothing here while the CLI reported the requested
+            # name as fact. But `from_pretrained` seeds `self.model` from
+            # `spec.model_primary`, so forwarding `self.model` outright hands the child
+            # `--model <manifest primary>` on every run — and this manifest field is
+            # "informational only for this framework": the target checkout has its own
+            # configuration, possibly model profiles, and this would override it.
+            #
+            # "Differs from the manifest" is how `push_to_hub` below already decides the
+            # same question. It means `--model X` where X *is* the manifest's value is
+            # not forwarded, which is the right answer for a field the manifest itself
+            # calls informational.
+            override = self.model if self.model != self.spec.model_primary else None
             return run_external(
-                self.spec, task, budget=resolved_budget.usd, live=live, model=self.model
+                self.spec, task, budget=resolved_budget.usd, live=live, model=override or None
             )
 
         return run(
