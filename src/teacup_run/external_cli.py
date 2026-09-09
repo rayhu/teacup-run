@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Sequence
@@ -147,6 +148,11 @@ def run_external(
         )
 
     ledger = Ledger()
+    # Seeded from what the sandbox actually measured, then stopped. Constructing the
+    # Ledger here and stopping it on the next line reported `elapsed_s: 0.0` and
+    # `cost.compute: 0.0` for every bridge run however long it took — the one field in
+    # the §7 object that did not reconcile with reality.
+    ledger.started_at = ledger.started_at - result.elapsed_s
     ledger.stop_clock()
 
     if result.timed_out:
@@ -217,8 +223,19 @@ def check_wiring(spec: AgentSpec) -> None:
             "directory"
         )
     entrypoint = spec.entrypoint or "uv run teacup-agent"
-    if not shlex.split(entrypoint):
+    argv = shlex.split(entrypoint)
+    if not argv:
         raise ManifestError(f"{spec.name}: entrypoint is empty")
+    # Checking only that the string splits answered "am I configured to run it?" with
+    # yes on a machine that has no such binary: `--dry-run` exited 0 and the real run
+    # died with FileNotFoundError. Same shape as the `project_root` case one field over.
+    program = Path(argv[0])
+    found = program.is_file() if program.is_absolute() else shutil.which(argv[0])
+    if not found:
+        raise ManifestError(
+            f"{spec.name}: entrypoint {argv[0]!r} is not on PATH — this machine cannot "
+            f"run {spec.framework!r} packages until it is installed"
+        )
 
 
 def _project_root(spec: AgentSpec) -> Path:

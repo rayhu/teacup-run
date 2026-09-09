@@ -117,10 +117,10 @@ def load_config(explicit: str | Path | None = None) -> Config:
     # registry rather than twice, differently.
     hub_setting = hub.get("path")
     return Config(
-        env_file=Path(env_file).expanduser() if env_file else None,
+        env_file=Path(_text(path, "env_file", env_file)).expanduser() if env_file else None,
         budget_usd=None if budget is None else float(budget),
         model=defaults.get("model") or None,
-        hub_path=Path(hub_setting).expanduser() if hub_setting else None,
+        hub_path=Path(_text(path, "hub.path", hub_setting)).expanduser() if hub_setting else None,
         auto_pull=bool(hub.get("auto_pull", False)),
         ledger=bool(output.get("ledger", True)),
         json=bool(output.get("json", False)),
@@ -143,7 +143,10 @@ def effective_hub(config: Config) -> Path | None:
     `push_to_hub()` — which passes no explicit hub — still honours it. Reads and writes
     would split across two directories, silently.
     """
-    if os.environ.get(registry.ENV_HOME):
+    # `.strip()` matches `hub_path()`'s own reading of the variable, so the two cannot
+    # disagree about whether the environment is speaking — disagreeing is exactly the
+    # silent read/write split this function exists to prevent.
+    if (os.environ.get(registry.ENV_HOME) or "").strip():
         return None
     return config.hub_path
 
@@ -157,12 +160,23 @@ _OUTPUT_KEYS = frozenset({"ledger", "json"})
 def _reject_unknown(
     path: Path, section: dict[str, Any], known: frozenset[str], prefix: str
 ) -> None:
-    unknown = sorted(set(section) - known)
+    # `map(str, ...)`: YAML keys are not necessarily strings, and `sorted({1, "zz"})`
+    # raises TypeError — which escaped preflight and exited 3, "runtime error", for a
+    # config file that simply had a typo in it.
+    unknown = sorted(str(key) for key in set(section) - known)
     if not unknown:
         return
     named = ", ".join(f"{prefix}{key}" for key in unknown)
     expected = ", ".join(f"{prefix}{key}" for key in sorted(known))
     raise ValueError(f"{path}: unknown config key(s): {named}. Known keys: {expected}.")
+
+
+def _text(path: Path, key: str, value: Any) -> str:
+    """A path-shaped setting must be a string. `Path([1, 2])` raises TypeError, which
+    is not what `load_config`'s caller catches, so a list here exited 3 rather than 4."""
+    if not isinstance(value, (str, Path)):
+        raise ValueError(f"{path}: config key {key!r} must be a path, got {type(value).__name__}")
+    return str(value)
 
 
 def _mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:

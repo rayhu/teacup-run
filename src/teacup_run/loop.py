@@ -100,7 +100,7 @@ def run(
     while True:
         attempts += 1
         try:
-            answer = _one_attempt(
+            answer, hit_turn_limit = _one_attempt(
                 prompt,
                 model=model,
                 instructions=instructions,
@@ -114,6 +114,12 @@ def run(
                 model_fn=model_fn,
             )
             if not goal_checks:
+                # Nothing to judge it by, so the limit is the only signal there is that
+                # this run never answered — and reporting it as a completed run made
+                # `teacup run` exit 0, telling CI a run that ran out of turns succeeded.
+                if hit_turn_limit:
+                    stopped_early, stop_kind = True, "budget"
+                    stop_reason = _turn_limit_reason(max_turns)
                 break
 
             # Inside the try, not after it. A check is ordinary Python written by
@@ -129,6 +135,13 @@ def run(
 
             if verdict.met or attempts >= max_attempts:
                 answer, verdict = best[1], best[2]
+                # A ceiling only matters when the goal was not reached: a run that hit
+                # its last turn *and* passed its checks did the job, and calling that
+                # an early stop would exit 2 for a success. The verdict is evaluated
+                # either way, which is what keeps benchmark scores where they were.
+                if hit_turn_limit and not (verdict and verdict.met):
+                    stopped_early, stop_kind = True, "budget"
+                    stop_reason = _turn_limit_reason(max_turns)
                 break
 
             prompt = revision_prompt(
@@ -136,8 +149,7 @@ def run(
             )
         except BudgetExceeded as exc:
             stopped_early, stop_reason, stop_kind = True, exc.reason, "budget"
-            partial = getattr(exc, "partial_answer", "") or answer
-            answer = _fallback(best, partial, f"The run stopped before finishing: {exc.reason}")
+            answer = _fallback(best, answer, f"The run stopped before finishing: {exc.reason}")
             break
         except Exception as exc:  # noqa: BLE001 - surfaced with the ledger, not swallowed
             stopped_early, stop_reason, stop_kind = True, f"{type(exc).__name__}: {exc}", "error"
@@ -175,8 +187,10 @@ def _one_attempt(
     called: list[str],
     max_turns: int,
     model_fn: Callable[..., Reply],
-) -> str:
-    """The inner loop: model, tools, model, ... until it answers."""
+) -> tuple[str, bool]:
+    """The inner loop: model, tools, model, ... until it answers.
+
+    Returns the answer and whether the turn limit ended it rather than the model."""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": instructions},
         {"role": "user", "content": prompt},
@@ -193,7 +207,7 @@ def _one_attempt(
         )
 
         if not reply.tool_calls:
-            return reply.text
+            return reply.text, False
 
         messages.append(_assistant_message(reply))
         for call in reply.tool_calls:
@@ -222,13 +236,21 @@ def _one_attempt(
     # "ran out of an allowance you set" (2) and this is one: `max_tool_calls` and
     # `deadline_s` already come through here. It also means the external backend's
     # `max_steps` — the same concept in the child — can map to the same kind.
-    exc = BudgetExceeded(f"reached the {max_turns}-turn limit before producing an answer")
-    # Carried, not discarded. Before this became an early stop, the last reply's text
-    # was returned as the answer, and `evaluate.py` scores keywords found in it. Making
-    # the stop honest must not quietly move a benchmark number, so the partial text
-    # still reaches `_fallback` — it is just no longer called a completed run.
-    exc.partial_answer = reply.text
-    raise exc
+    # Reported, not raised.
+    #
+    # Raising here was wrong in a way that took a second review to see: it skipped
+    # `evaluate()` further down, so `Result.goal` came back None, `evaluate.py` scored
+    # `goal_met=None` as 0, and a benchmark task that exhausted its turns but *passed
+    # its checks* dropped 0.3 of its quality score — enough to cross the 0.5 success
+    # threshold. Worse, only the `goal-loop` arm has checks, so `compare="goal_loop"`
+    # became biased against the thing it exists to measure.
+    #
+    # The caller decides what the limit means, once the verdict is in.
+    return reply.text, True
+
+
+def _turn_limit_reason(max_turns: int) -> str:
+    return f"reached the {max_turns}-turn limit before producing an answer"
 
 
 def _assistant_message(reply: Reply) -> dict[str, Any]:

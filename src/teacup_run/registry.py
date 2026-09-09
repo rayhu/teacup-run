@@ -58,7 +58,13 @@ def hub_path() -> Path:
     value arrives as text from a shell profile or a `.env` file, where `~` is
     ordinary; without it a literal `~` directory gets created under the cwd.
     """
-    return Path(os.environ.get(ENV_HOME, Path.home() / ".teacup")).expanduser() / "agents"
+    # `.strip()` and the falsy check together: `TEACUP_HOME=` (exported empty, which a
+    # shell profile does by accident) otherwise yields `agents` relative to the cwd, so
+    # the hub moves with wherever you happen to be standing. `resolve()` for the same
+    # reason on a relative value — it is still honoured, just pinned once.
+    raw = (os.environ.get(ENV_HOME) or "").strip()
+    home = Path(raw).expanduser().resolve() if raw else Path.home() / ".teacup"
+    return home / "agents"
 
 
 def _is_git_url(ref: str) -> bool:

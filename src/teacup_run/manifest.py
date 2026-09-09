@@ -125,7 +125,7 @@ class AgentSpec:
         path = (root / relative).resolve()
         if path != root and root not in path.parents:
             raise ManifestError(
-                f"{MANIFEST_NAME} points at {relative!r}, which is outside the package "
+                f"refusing to read {relative!r}: it resolves outside the package "
                 f"({root}). A package may only read its own files."
             )
         return path
@@ -196,7 +196,15 @@ class AgentSpec:
         included: a skill with no procedure to load is exactly as unusable as one
         with no description), so a skill that validates in one repo validates in the
         other."""
-        text = self.read(f"skills/{skill}/SKILL.md")
+        try:
+            text = self.read(f"skills/{skill}/SKILL.md")
+        except ManifestError:
+            # Skipped, not fatal — which is what `available_skills` documents and what
+            # `skills.py`'s `discover()` does. A `skills/<name>` directory that is a
+            # symlink out of the package is refused by `_inside`, and raising here made
+            # `validate()` — and so the whole package — unloadable over one skill that
+            # simply should not be offered.
+            return None
         meta = parse_frontmatter(text)
         name = str(meta.get("name") or skill)
         description = str(meta.get("description", "")).strip()

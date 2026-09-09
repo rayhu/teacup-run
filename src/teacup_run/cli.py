@@ -29,6 +29,8 @@ import argparse
 import contextlib
 import json
 import sys
+
+import yaml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,7 +38,7 @@ from typing import Any
 from . import registry
 from .auto import AutoAgent
 from .budget import Budget, Ledger
-from .config import DEFAULT_BUDGET_USD, Config, effective_hub, load_config
+from .config import DEFAULT_BUDGET_USD, Config, config_path, effective_hub, load_config
 from .env import load_env
 from .loop import Result
 from .manifest import AgentSpec, ManifestError
@@ -75,7 +77,9 @@ class Preflight:
         spec = self.agent.spec
         tools = ", ".join(spec.tools) or "none"
         skills = ", ".join(self.agent.enabled_skills) or "none"
-        budget = "unlimited" if self.budget.usd is None else f"${self.budget.usd:,.2f}"
+        # `_resolve_budget` always lands on a float — `DEFAULT_BUDGET_USD` is the last
+        # link in §4's chain — so there is no unlimited case to render here.
+        budget = f"${self.budget.usd:,.2f}"
         lines = [
             f"agent   {spec.name} {spec.version}  ({self.ref})",
             f"model   {self.model or f'(whatever {spec.framework} is configured to use)'}",
@@ -209,8 +213,11 @@ def _preflight(args: argparse.Namespace) -> Preflight:
     """
     try:
         config = load_config(args.config)
-    except (FileNotFoundError, ValueError) as exc:
-        raise PreflightError(str(exc)) from exc
+    except (FileNotFoundError, ValueError, TypeError, yaml.YAMLError) as exc:
+        # `yaml.YAMLError` is not a `ValueError`, so an unparsable config file used to
+        # reach `main()`'s catch-all and exit 3 — "stopped early: runtime error" — for
+        # a run that never started. §5 reserves 4 for exactly this.
+        raise PreflightError(f"{config_path(args.config)}: {exc}") from exc
 
     _check_auto_pull(args.ref, config)
 
@@ -221,6 +228,13 @@ def _preflight(args: argparse.Namespace) -> Preflight:
         agent = AutoAgent.from_pretrained(args.ref, hub=effective_hub(config))
     except (ManifestError, RegistryError, FileNotFoundError, ValueError) as exc:
         raise PreflightError(f"could not load {args.ref!r}: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        # A package's `tools.py` is arbitrary Python and can raise anything at import.
+        # Left to `main()`'s catch-all it exited 3 naming neither the package nor the
+        # file; loading is "did not start", which is 4.
+        raise PreflightError(
+            f"could not load {args.ref!r}: {type(exc).__name__}: {exc}"
+        ) from exc
 
     _, env_source = _resolve_environment(args, config)
 
@@ -244,7 +258,7 @@ def _preflight(args: argparse.Namespace) -> Preflight:
 
         try:
             check_wiring(agent.spec)
-        except ManifestError as exc:
+        except (ManifestError, ValueError) as exc:
             raise PreflightError(f"could not load {args.ref!r}: {exc}") from exc
 
         inapplicable = [
@@ -285,6 +299,7 @@ def _preflight(args: argparse.Namespace) -> Preflight:
         model = override or agent.spec.model_primary
     else:
         model = None
+
     budget = _resolve_budget(args, config, agent.spec)
     return Preflight(agent, args.ref, model, budget, env_source, config)
 

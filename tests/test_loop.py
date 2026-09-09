@@ -7,6 +7,7 @@ import pytest
 from conftest import FakeModel, text_reply, tool_reply
 from teacup_run.budget import Budget
 from teacup_run.loop import run
+from teacup_run.model import Reply
 from teacup_run.tools import tool
 
 
@@ -129,3 +130,60 @@ def test_the_turn_limit_ends_a_tool_loop_that_never_answers():
     assert result.stopped_early
     assert result.stop_kind == "budget"
     assert "3-turn limit" in result.stop_reason
+
+
+def test_the_turn_limit_still_evaluates_the_goal():
+    """The half the first version of this fix silently dropped.
+
+    Raising at the turn limit skipped `evaluate()`, so `Result.goal` came back None,
+    `evaluate.py` scored `goal_met=None` as 0, and a benchmark task that exhausted its
+    turns but *passed its checks* lost 0.3 of its quality — enough to cross the 0.5
+    success threshold. Only the `goal-loop` arm declares checks, so `compare` became
+    biased against the very thing it measures. Asserting on the text alone could not
+    see it.
+    """
+    replies = [tool_reply("note", {"text": str(i)}) for i in range(20)]
+    replies[2] = Reply(
+        text="alpha beta gamma",
+        tool_calls=replies[2].tool_calls,
+        usage=replies[2].usage,
+    )
+    model = FakeModel(*replies)
+
+    result = run(
+        "task",
+        model="gpt-5",
+        instructions="",
+        tools=[note],
+        checks={"non_empty": lambda attempt: "" if attempt.answer.strip() else "no answer"},
+        goal_checks=("non_empty",),
+        max_turns=3,
+        model_fn=model,
+    )
+
+    assert result.goal is not None, "the goal was never evaluated"
+    assert result.goal.met is True
+    assert "alpha beta gamma" in result.answer
+    # Met its goal on the last allowed turn: that is a completed run, not an early
+    # stop, and calling it one would exit 2 for a success.
+    assert not result.stopped_early
+
+
+def test_the_turn_limit_is_an_early_stop_when_the_goal_was_not_met():
+    replies = [tool_reply("note", {"text": str(i)}) for i in range(20)]
+    model = FakeModel(*replies)
+
+    result = run(
+        "task",
+        model="gpt-5",
+        instructions="",
+        tools=[note],
+        checks={"non_empty": lambda attempt: "" if attempt.answer.strip() else "no answer"},
+        goal_checks=("non_empty",),
+        max_turns=3,
+        model_fn=model,
+    )
+
+    assert result.goal is not None and result.goal.met is False
+    assert result.stopped_early
+    assert result.stop_kind == "budget"

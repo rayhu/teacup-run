@@ -70,7 +70,7 @@ def missing_environment(self) -> tuple[str, ...]:
 The CLI never reads a `.env` from inside an agent package. A `.env` is never
 committed and never ships — [`.gitignore`](../.gitignore) ignores it at any
 depth and [`registry.publish`](../src/teacup_run/registry.py) strips it via
-`ignore_patterns("__pycache__", "*.pyc", ".env")` — so a package that depended on
+`ignore_patterns(*NOT_PUBLISHED)`, whose first entry is `.env` — so a package that depended on
 one would break the moment somebody published it. Credentials belong to the
 environment an agent runs in, not to the artifact. A package declares only the
 *names* it needs, through `environment.required`.
@@ -158,7 +158,11 @@ a config file that could set `OPENAI_API_KEY` directly would undo §3.
 
 - **stdout** — `result.answer`, and nothing else.
 - **stderr** — the preflight echo and the cost ledger.
-- `--json` — one JSON object on stdout, and *nothing* else on stdout.
+- `--json` — one JSON object on stdout, and *nothing* else on stdout. One exception,
+  deliberate: a **preflight failure (exit 4) prints nothing on stdout**, because
+  nothing has been resolved yet — there is no agent, budget or ledger to describe, and
+  an object full of nulls would be a worse contract than none. Every other exit path,
+  including a failed run, emits the object.
 
 So `teacup run ... > answer.txt` leaves a clean file with the ledger still on
 the terminal, and `teacup run ... --json | jq .cost.total` works.

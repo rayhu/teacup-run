@@ -865,9 +865,16 @@ def test_a_manifest_asking_for_more_than_the_built_in_default_says_so(
     assert "999.00" in err and "--budget" in err
 
 
-def test_an_empty_ref_is_refused(capsys):
-    """`Path("")` is `.`, so it quietly ran whatever agent was in the cwd."""
+def test_an_empty_ref_is_refused(monkeypatch, capsys):
+    """`Path("")` is `.`, so it quietly ran whatever agent was in the cwd.
+
+    The chdir is the test. Without it this passed with the guard removed — the repo
+    root has no `agent.yaml`, so resolution failed for an unrelated reason and the
+    assertion was satisfied by the wrong mechanism. Standing in a package directory is
+    the only place the bug is visible."""
+    monkeypatch.chdir(REPO_ROOT / EXAMPLE)
     assert cli.main(["run", "", "task", "--no-dotenv"]) == EXIT_PREFLIGHT
+    assert "no agent ref" in capsys.readouterr().err
 
 
 def test_a_failure_outside_the_loop_still_emits_the_json_object(example, monkeypatch, capsys):
@@ -994,3 +1001,168 @@ def test_the_turn_limit_keeps_the_text_the_model_had_produced():
     assert result.stopped_early
     assert result.stop_kind == "budget"
     assert "a partial thought worth keeping" in result.answer
+
+
+def test_a_model_override_equal_to_the_manifests_own_is_still_forwarded(monkeypatch, capsys):
+    """Deciding "was it overridden?" by `self.model != spec.model_primary` drops
+    `--model gpt-5` against a manifest whose primary is `gpt-5` — and the bridge
+    example's primary *is* `gpt-5`, so this is the ordinary case, not a corner. The
+    report named it and the child never saw it."""
+    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
+    argv, code = _bridge_argv(
+        monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json", "--model", "gpt-5"]
+    )
+
+    assert code == EXIT_OK
+    assert argv[argv.index("--model") + 1] == "gpt-5"
+    assert json.loads(capsys.readouterr().out)["model"] == "gpt-5"
+
+
+def test_a_config_model_equal_to_the_manifests_own_is_still_forwarded(
+    monkeypatch, tmp_path, capsys
+):
+    """Same collision, reached through `defaults.model` rather than the flag."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defaults:\n  model: gpt-5\n", encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
+    argv, code = _bridge_argv(monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json"])
+
+    assert code == EXIT_OK
+    assert argv[argv.index("--model") + 1] == "gpt-5"
+
+
+@pytest.mark.parametrize(
+    "body, expect",
+    [
+        ("defaults:\n  budget_usd: [unclosed\n", "invalid yaml"),
+        ("1: a\nzz: b\n", "mixed-type keys"),
+        ("env_file: [1, 2]\n", "env_file is a list"),
+    ],
+    ids=["invalid yaml", "mixed-type keys", "env_file is a list"],
+)
+def test_a_bad_config_is_four_not_three(example, tmp_path, monkeypatch, capsys, body, expect):
+    """§5 reserves 3 for "stopped early: runtime error" — a run that started and then
+    broke. These never started. Each reached `main()`'s catch-all and exited 3 with a
+    raw exception name, all of them under `--dry-run`, the cheap-and-safe mode."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(body, encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+
+    assert cli.main(["run", example, "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
+    assert "teacup failed" not in capsys.readouterr().err  # not the catch-all
+
+
+def test_an_unparseable_entrypoint_is_four_not_three(tmp_path, capsys):
+    """`shlex.split` raises ValueError on an unbalanced quote, and `check_wiring` was
+    only catching ManifestError."""
+    root = _bridge_package(tmp_path, entrypoint="uv run 'oops", project_root=".")
+    assert cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
+    assert "teacup failed" not in capsys.readouterr().err
+
+
+def test_dry_run_looks_for_the_entrypoint_binary(tmp_path, capsys):
+    """§6 promises "am I configured to run it?". Checking only that the string splits
+    answered yes on a machine with no such binary: dry-run exited 0, the real run died
+    with FileNotFoundError."""
+    root = _bridge_package(tmp_path, entrypoint="this-binary-does-not-exist --x")
+    assert cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
+    assert "not on PATH" in capsys.readouterr().err
+
+
+def _bridge_package(tmp_path, *, entrypoint, project_root=".") -> Path:
+    root = tmp_path / "bridge-probe"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("unused", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: probe/bridge\nversion: 0.1.0\ndescription: a probe.\n"
+        "framework: teacup-agent-cli\n"
+        f"entrypoint: {entrypoint!r}\n"
+        "model:\n  primary: gpt-5\ninstructions: prompts/system.md\n"
+        "budget:\n  default_usd: 0.05\n"
+        f"teacup_agent:\n  project_root: {project_root}\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_a_skill_that_escapes_the_package_is_skipped_not_fatal(tmp_path):
+    """`available_skills` documents "malformed is skipped, not fatal". Raising out of
+    `skill_meta` made one unofferable skill cost the whole package: `validate()` calls
+    `available_skills`, so `from_pretrained` failed with exit 4."""
+    outside = tmp_path / "shared-skills" / "pdf"
+    outside.mkdir(parents=True)
+    (outside / "SKILL.md").write_text("---\nname: pdf\ndescription: d\n---\nbody", encoding="utf-8")
+
+    root = tmp_path / "pkg"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful", encoding="utf-8")
+    (root / "skills").mkdir()
+    (root / "skills" / "pdf").symlink_to(outside, target_is_directory=True)
+    (root / "agent.yaml").write_text(
+        "name: test/skills\nversion: 0.1.0\ndescription: d.\n"
+        "model:\n  primary: gpt-5-mini\ninstructions: prompts/system.md\n"
+        "budget:\n  default_usd: 0.5\n",
+        encoding="utf-8",
+    )
+
+    spec = AgentSpec.load(root)
+    assert spec.available_skills() == ()  # not offered
+    spec.validate(tools=set(), checks=set())  # and the package still loads
+
+
+def test_a_bridge_run_reports_the_time_it_actually_took(monkeypatch, capsys):
+    """`run_external` built a Ledger and stopped its clock on the next line, so every
+    bridge run reported `elapsed_s: 0.0` however long the child ran — the one field in
+    the §7 object that did not reconcile."""
+    from teacup_run import external_cli
+    from teacup_run.sandbox import SandboxResult
+
+    monkeypatch.setattr(
+        external_cli,
+        "run_sandboxed",
+        lambda argv, **k: SandboxResult(
+            elapsed_s=2.5,
+            limits_applied=True,
+            timed_out=False,
+            returncode=0,
+            stdout=json.dumps({"status": "done", "answer": "x", "remaining_budget": 0.05}),
+            stderr="",
+        ),
+    )
+    cli.main(["run", str(REPO_ROOT / "examples/teacup-agent-bridge"), "t", "--no-dotenv", "--json"])
+    assert json.loads(capsys.readouterr().out)["elapsed_s"] >= 2.5
+
+
+def test_an_empty_teacup_home_does_not_move_the_hub_to_the_cwd(monkeypatch, tmp_path):
+    """Exported-but-empty is something a shell profile does by accident. `hub_path()`
+    then returned `agents` relative to the cwd while `effective_hub` treated the same
+    value as absent — the silent read/write split it exists to prevent."""
+    from teacup_run import registry
+    from teacup_run.config import Config, effective_hub
+
+    monkeypatch.setenv("TEACUP_HOME", "")
+    monkeypatch.chdir(tmp_path)
+
+    assert registry.hub_path() == Path.home() / ".teacup" / "agents"
+    assert effective_hub(Config(hub_path=tmp_path / "from-config")) == tmp_path / "from-config"
+
+
+def test_a_package_whose_tools_py_raises_on_import_is_four_and_names_it(tmp_path, capsys):
+    """`tools.py` is arbitrary Python. Left to `main()`'s catch-all it exited 3 naming
+    neither the package nor the file; loading is "did not start", which is 4."""
+    root = tmp_path / "explodes"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: test/explodes\nversion: 0.1.0\ndescription: d.\n"
+        "model:\n  primary: gpt-5-mini\ninstructions: prompts/system.md\n"
+        "budget:\n  default_usd: 0.5\n",
+        encoding="utf-8",
+    )
+    (root / "tools.py").write_text("raise RuntimeError('hostile package import')\n", encoding="utf-8")
+
+    assert cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
+    err = capsys.readouterr().err
+    assert "could not load" in err and "explodes" in err
+    assert "teacup failed" not in err

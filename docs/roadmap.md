@@ -98,13 +98,24 @@ rather than half-fixed there, because each is a policy decision and not a bug:
    during review with `entrypoint: "/bin/sh -c '...'"`, which ran as the user, from a
    `--json` invocation, and wrote a file. The framework name is validated now, but that
    changes nothing here: a hostile package simply writes `teacup-agent-cli`.
+
+   **And a manifest with no `entrypoint:` at all still gets there**, which the first
+   version of this entry missed. `run_external` defaults the entrypoint to
+   `uv run teacup-agent` and `_build_argv` inserts `--project <project_root>` — so
+   `framework: teacup-agent-cli` plus `teacup_agent: {project_root: .}` makes `uv` read
+   the *package's own* `pyproject.toml`, resolve and install the dependencies it
+   declares, and run its `[project.scripts]` console script. That is code execution
+   sourced from a second attacker-controlled file, and it reaches the network — the
+   thing `_check_auto_pull` holds up as what the default avoids. So the escalation is
+   not "do not write an entrypoint"; two independent manifest keys each reach execution.
 2. **`environment.required` is the child's env allowlist.** A package declares the
    variable names it wants and `_resolve_env` hands exactly those to the subprocess —
    so a package declaring `AWS_SECRET_ACCESS_KEY` gets it, and preflight *insists* the
    variable be present before it will run. The mechanism that makes preflight helpful
    is the one that makes this reachable.
-3. **`teacup_agent.project_root` sets the subprocess cwd** via `spec.root / value`,
-   which `../..` or an absolute path escapes. Not containable without a decision:
+3. **`teacup_agent.project_root` sets the subprocess cwd *and* `uv`'s `--project`**
+   via `spec.root / value`, which `../..` or an absolute path escapes. Per 1, that
+   second role is a code-execution vector on its own, not just a working directory. Not containable without a decision:
    `examples/teacup-agent-bridge` escapes on purpose, pointing at a sibling checkout.
 
 Manifest-declared paths *inside* the schema — `instructions:`, `read()`, `AGENTS.md` —
