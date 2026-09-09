@@ -867,3 +867,23 @@ def test_a_manifest_asking_for_more_than_the_built_in_default_says_so(
 def test_an_empty_ref_is_refused(capsys):
     """`Path("")` is `.`, so it quietly ran whatever agent was in the cwd."""
     assert cli.main(["run", "", "task", "--no-dotenv"]) == EXIT_PREFLIGHT
+
+
+def test_a_failure_outside_the_loop_still_emits_the_json_object(example, monkeypatch, capsys):
+    """`loop.run` catches its own failures, so this path is narrow — but §5's promise is
+    "one JSON object on stdout" on *every* exit path, and the value of that promise is
+    that a consumer never has to parse stderr prose to tell "the tool crashed" from
+    "the agent failed". It printed a stderr line and left stdout empty."""
+    _fake(monkeypatch, *GOOD)
+    monkeypatch.setattr(
+        "teacup_run.auto.AutoAgent.run",
+        lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("backend exploded")),
+    )
+
+    code = cli.main(["run", example, "notes", "--no-dotenv", "--json"])
+    d = json.loads(capsys.readouterr().out)
+
+    assert code == EXIT_ERROR
+    assert d["stopped"]["kind"] == "error"
+    assert "backend exploded" in d["stopped"]["reason"]
+    assert d["goal"]["met"] is False
