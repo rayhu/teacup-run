@@ -45,8 +45,15 @@ class RegistryError(RuntimeError):
 
 
 def hub_path() -> Path:
-    """Where pulled and published agents live. Override with `TEACUP_HOME`."""
-    return Path(os.environ.get("TEACUP_HOME", Path.home() / ".teacup")) / "agents"
+    """Where pulled and published agents live. Override with `TEACUP_HOME`.
+
+    `TEACUP_HOME` names the teacup home, not the agents directory — the `agents`
+    segment is appended here, so `TEACUP_HOME=~/.teacup` and the config's
+    `hub.path: ~/.teacup/agents` name the same directory. `expanduser` because the
+    value arrives as text from a shell profile or a `.env` file, where `~` is
+    ordinary; without it a literal `~` directory gets created under the cwd.
+    """
+    return Path(os.environ.get("TEACUP_HOME", Path.home() / ".teacup")).expanduser() / "agents"
 
 
 def _is_git_url(ref: str) -> bool:

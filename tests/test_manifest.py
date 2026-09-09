@@ -256,3 +256,85 @@ def test_validate_reports_a_truly_missing_skill_as_such(tmp_path):
 
     with pytest.raises(ManifestError, match="no SKILL.md: nowhere"):
         spec.validate(tools={"do_thing"}, checks={"non_empty"})
+
+
+# -- a package may only read its own files ------------------------------------
+#
+# Every path below is written by whoever wrote the package, and the hub exists so
+# you can run packages you did not write. The reviewer who found this proved it by
+# reading a file outside the package into the system prompt during `--dry-run`.
+
+
+def _pkg(tmp_path, instructions="prompts/system.md"):
+    root = tmp_path / "pkg"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful")
+    return root, MINIMAL.replace("instructions: prompts/system.md", f"instructions: {instructions}")
+
+
+def test_instructions_may_not_escape_the_package(tmp_path):
+    (tmp_path / "secrets.env").write_text("OPENAI_API_KEY=sk-real")
+    root, text = _pkg(tmp_path, instructions="../secrets.env")
+    spec = AgentSpec.load(root, manifest_text=text)
+
+    with pytest.raises(ManifestError, match="outside the package"):
+        spec.instructions()
+
+
+def test_the_escape_is_refused_during_dry_run_too(tmp_path):
+    """`validate()` reads the instructions, and `--dry-run` calls `validate()`. A
+    check that only fired on a real run would fire after the exfiltration."""
+    (tmp_path / "secrets.env").write_text("OPENAI_API_KEY=sk-real")
+    root, text = _pkg(tmp_path, instructions="../secrets.env")
+    spec = AgentSpec.load(root, manifest_text=text)
+
+    with pytest.raises(ManifestError, match="outside the package"):
+        spec.validate(tools={"do_thing"}, checks={"non_empty"})
+
+
+def test_an_absolute_instructions_path_is_refused(tmp_path):
+    """`root / "/etc/passwd"` is `/etc/passwd` — pathlib discards the left side, so
+    an absolute path escapes without containing a single `..`."""
+    outside = tmp_path / "outside.md"
+    outside.write_text("secret")
+    root, text = _pkg(tmp_path, instructions=str(outside))
+    spec = AgentSpec.load(root, manifest_text=text)
+
+    with pytest.raises(ManifestError, match="outside the package"):
+        spec.instructions()
+
+
+def test_a_symlink_out_of_the_package_is_refused(tmp_path):
+    """Containment on the literal text alone would pass this: the manifest says
+    `prompts/leak.md`, which looks local."""
+    (tmp_path / "secrets.env").write_text("OPENAI_API_KEY=sk-real")
+    root, text = _pkg(tmp_path, instructions="prompts/leak.md")
+    (root / "prompts" / "leak.md").symlink_to(tmp_path / "secrets.env")
+    spec = AgentSpec.load(root, manifest_text=text)
+
+    with pytest.raises(ManifestError, match="outside the package"):
+        spec.instructions()
+
+
+def test_read_is_contained_as_well(tmp_path):
+    root, text = _pkg(tmp_path)
+    spec = AgentSpec.load(root, manifest_text=text)
+
+    with pytest.raises(ManifestError, match="outside the package"):
+        spec.read("../../etc/passwd")
+
+
+def test_a_package_still_reads_its_own_files(tmp_path):
+    """The containment check must not cost a package its own instructions."""
+    root, text = _pkg(tmp_path)
+    spec = AgentSpec.load(root, manifest_text=text)
+
+    assert spec.instructions() == "be helpful"
+
+
+def test_an_unknown_framework_is_refused_rather_than_shelled_out(tmp_path):
+    """Anything but `teacup` routes to `run_external`, which executes `entrypoint:`.
+    A typo must not be a way to reach that path."""
+    text = MINIMAL + "\nframework: teacup-agent\nentrypoint: /bin/sh -c 'echo hi'\n"
+    with pytest.raises(ManifestError, match="does not know how to run"):
+        AgentSpec.load(tmp_path, manifest_text=text)
