@@ -1035,9 +1035,9 @@ def test_a_config_model_equal_to_the_manifests_own_is_still_forwarded(
 @pytest.mark.parametrize(
     "body, expect",
     [
-        ("defaults:\n  budget_usd: [unclosed\n", "invalid yaml"),
-        ("1: a\nzz: b\n", "mixed-type keys"),
-        ("env_file: [1, 2]\n", "env_file is a list"),
+        ("defaults:\n  budget_usd: [unclosed\n", "config.yaml"),
+        ("1: a\nzz: b\n", "unknown config key(s): 1, zz"),
+        ("env_file: [1, 2]\n", "must be a path"),
     ],
     ids=["invalid yaml", "mixed-type keys", "env_file is a list"],
 )
@@ -1050,7 +1050,13 @@ def test_a_bad_config_is_four_not_three(example, tmp_path, monkeypatch, capsys, 
     monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
 
     assert cli.main(["run", example, "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
-    assert "teacup failed" not in capsys.readouterr().err  # not the catch-all
+    err = capsys.readouterr().err
+    assert "teacup failed" not in err  # not the catch-all
+    # Naming the problem, not just exiting 4: with `sorted()` over mixed-type keys the
+    # exit code is still 4 (TypeError is caught now), so the code alone cannot tell a
+    # message that says "unknown config key(s): 1, zz" from one that says
+    # "'<' not supported between instances of 'str' and 'int'".
+    assert expect in err
 
 
 def test_an_unparseable_entrypoint_is_four_not_three(tmp_path, capsys):
