@@ -35,7 +35,7 @@ from typing import Any
 from . import registry
 from .auto import AutoAgent
 from .budget import Budget, Ledger
-from .config import Config, load_config
+from .config import DEFAULT_BUDGET_USD, Config, load_config
 from .env import load_env
 from .loop import Result
 from .manifest import AgentSpec, ManifestError
@@ -89,7 +89,15 @@ class Preflight:
 
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        # argparse exits 2 for a usage error, and §5 reserves 2 for "stopped early:
+        # budget exceeded". A CI job branching on the exit code would read a typo'd
+        # flag as an overspend. A usage error did not start the run, which is what 4
+        # means. `--help` exits 0 and is left alone.
+        code = exc.code if isinstance(exc.code, int) else EXIT_PREFLIGHT
+        return EXIT_PREFLIGHT if code == 2 else code
     if args.command is None:
         parser.print_help(sys.stderr)
         return EXIT_PREFLIGHT
@@ -155,14 +163,22 @@ def _preflight(args: argparse.Namespace) -> Preflight:
     In the order `docs/execution.md` §2 specifies, because the order is the point: each
     step can only fail on something the previous one has already established.
     """
-    config = load_config(args.config)
+    try:
+        config = load_config(args.config)
+    except (FileNotFoundError, ValueError) as exc:
+        raise PreflightError(str(exc)) from exc
 
-    env_file, env_source = _resolve_environment(args, config)
+    _check_auto_pull(args.ref, config)
 
+    # §2's order, and the order matters: each step can only fail on something the
+    # previous one established. Resolving the environment first meant a bad env file
+    # masked a bad ref, so the message named the wrong problem.
     try:
         agent = AutoAgent.from_pretrained(args.ref, hub=config.hub_path)
     except (ManifestError, RegistryError, FileNotFoundError, ValueError) as exc:
         raise PreflightError(f"could not load {args.ref!r}: {exc}") from exc
+
+    env_file, env_source = _resolve_environment(args, config)
 
     for skill in args.skill:
         try:
@@ -184,6 +200,32 @@ def _preflight(args: argparse.Namespace) -> Preflight:
     return Preflight(agent, args.ref, model, budget, env_file, env_source, config)
 
 
+def _check_auto_pull(ref: str, config: Config) -> None:
+    """Refuse to fetch a ref off the network unless the config says to.
+
+    `hub.auto_pull` is documented as this gate, defaulting to false, on the grounds
+    that a `run` which never reaches the network on its own is the safer default. It
+    matters more than a convenience toggle: `registry.resolve` clones a git URL, and
+    `AutoAgent.from_pretrained` then imports the clone's `tools.py` — so without the
+    gate one shell command fetches and executes a stranger's Python, and `--dry-run`
+    does it too, before deciding not to call a model.
+
+    A ref already on disk or already in the hub is not a fetch and is not gated; this
+    only stops the first, network-touching resolution.
+    """
+    if config.auto_pull:
+        return
+    if Path(ref).expanduser().exists():
+        return
+    if not registry._is_git_url(ref):
+        return  # a hub name: resolve() will look locally and error if it is absent
+    raise PreflightError(
+        f"{ref} would be fetched from the network, and fetching runs the package's own "
+        "Python. Run `teacup pull` first, or set `hub: {auto_pull: true}` in your "
+        "config to allow it."
+    )
+
+
 def _resolve_environment(args: argparse.Namespace, config: Config) -> tuple[Path | None, str]:
     """Load credentials, and report which source supplied them.
 
@@ -192,18 +234,27 @@ def _resolve_environment(args: argparse.Namespace, config: Config) -> tuple[Path
     that file holds. A container that exports a key and also mounts a stale `.env` gets
     the exported one, which is what `load_env(override=False)` already does.
     """
-    explicit = args.env_file or (str(config.env_file) if config.env_file else None)
-    if explicit is not None:
-        path = Path(explicit).expanduser()
+    if args.env_file:
+        # Typed now, so a missing file is an error: the caller named this path.
+        path = Path(args.env_file).expanduser()
         if not path.is_file():
             raise PreflightError(f"env file not found: {path}")
-        used = load_env(path)
-        return used, f"{path} (explicit)"
+        return load_env(path), f"{path} (--env-file)"
 
+    if config.env_file is not None:
+        # Ambient, and it travels: §4's whole argument for the config file is that it
+        # is safe to commit to a dotfiles repo, so it is *expected* to land on machines
+        # where this path does not exist and where the process environment supplies the
+        # credentials instead (§3 rule 1: container, systemd, CI secrets). Fatal here
+        # would brick `teacup run` on every one of those machines.
+        path = config.env_file.expanduser()
+        if not path.is_file():
+            return None, f"process environment only ({path} from config is absent)"
+        return load_env(path), f"{path} (config env_file)"
+
+    used = load_env(search_cwd=not args.no_dotenv)
     if args.no_dotenv:
         return None, "process environment only (--no-dotenv)"
-
-    used = load_env(search_cwd=True)
     if used is None:
         return None, "process environment only (no .env found)"
     return used, f"{used} (found by search)"
@@ -227,8 +278,10 @@ def _resolve_budget(args: argparse.Namespace, config: Config, spec: AgentSpec) -
         usd = args.budget
     elif config.budget_usd is not None:
         usd = config.budget_usd
-    else:
+    elif spec.budget_usd is not None:
         usd = spec.budget_usd
+    else:
+        usd = DEFAULT_BUDGET_USD
     return Budget(
         usd=usd,
         max_tool_calls=spec.budget_max_tool_calls,
@@ -247,6 +300,11 @@ def _exit_code(result: Result, dry_run: bool) -> int:
     if result.stop_kind == "budget":
         return EXIT_BUDGET
     if result.stop_kind == "error":
+        return EXIT_ERROR
+    if result.stopped_early:
+        # A backend that stopped early without saying why. Reporting 0 here would tell
+        # CI a timed-out or crashed run succeeded, which is the failure this table
+        # exists to prevent — so an unclassified early stop is an error, not a success.
         return EXIT_ERROR
     if result.goal is not None and not result.goal.met:
         return EXIT_GOAL_NOT_MET

@@ -155,7 +155,7 @@ class Ledger:
         if budget is not None and budget.usd is not None:
             out.append("")
             out.append(line("Budget", budget.usd))
-            out.append(line("Remaining", budget.remaining(self) or 0.0))
+            out.append(line("Remaining", max(0.0, budget.remaining(self))))
         return "\n".join(out)
 
     def render_usage(self) -> str:
@@ -186,12 +186,16 @@ class Budget:
     def remaining(self, ledger: Ledger) -> float | None:
         """Dollars left, or None when no dollar ceiling was set.
 
-        Lifted out of `Ledger.render`, where it lived as an expression: a caller that
-        wants the number for a JSON field should not have to re-derive it and risk
-        deriving it differently. Floored at zero for the same reason `render` floors it
-        — a run that overshot has nothing left, not a negative allowance.
+        Signed, deliberately. A run can overshoot — the budget is checked *before* a
+        call, so the call that trips it has already been paid for — and a caller
+        reconciling `budget.usd - cost.total` against this number would get a
+        contradiction if it were clamped, with the size of the overrun surviving only in
+        `stop_reason`, the prose field `stop_kind` exists to stop people parsing.
+
+        The clamp stays in `Ledger.render`, where it belongs: "Remaining $0.00" is a
+        display choice for a human, and a negative allowance is not a thing to show.
         """
-        return None if self.usd is None else max(0.0, self.usd - ledger.total_cost)
+        return None if self.usd is None else self.usd - ledger.total_cost
 
     @classmethod
     def of(cls, value: "Budget | float | int | None") -> "Budget":

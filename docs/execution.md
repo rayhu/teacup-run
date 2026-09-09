@@ -188,14 +188,18 @@ the existing `model_fn` seam) is a separate feature.
   "usage":   {"input_tokens": 1840, "output_tokens": 220, "cached_input_tokens": 0},
   "budget":  {"usd": 0.25, "remaining": 0.2169},
   "stopped": {"early": false, "kind": null, "reason": null},
+  "dry_run": false,
   "elapsed_s": 7.4,
   "exit_code": 0
 }
 ```
 
-Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except two:
-`stopped.kind` from §5, and `budget.remaining`, which today exists only as an
-expression inside [`Ledger.render`](../src/teacup_run/budget.py#L158).
+Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except three:
+`stopped.kind` from §5; `budget.remaining`, which lived only as an expression
+inside `Ledger.render`; and `dry_run`, which is not on `Result` at all because a
+dry run never produces one. Without it `--json --dry-run` is indistinguishable
+from a real run that returned an empty answer at zero cost, which is exactly the
+confusion §6 warns about — a wiring check must not be mistakable for a run.
 
 ## 8. Implementation plan
 

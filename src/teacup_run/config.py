@@ -28,7 +28,6 @@ __all__ = ["Config", "load_config", "config_path"]
 
 ENV_VAR = "TEACUP_CONFIG"
 DEFAULT_PATH = Path("~/.config/teacup/config.yaml")
-DEFAULT_HUB = Path("~/.teacup/agents")
 DEFAULT_BUDGET_USD = 1.00
 
 
@@ -37,9 +36,18 @@ class Config:
     """Resolved settings. Field names match the YAML keys they come from."""
 
     env_file: Path | None = None
-    budget_usd: float | None = DEFAULT_BUDGET_USD
+    # None means "this machine states no ceiling", which is different from stating one.
+    # The built-in default belongs *last* in §4's chain, after the manifest — parking it
+    # here made "no config file" beat a package's own declared budget, silently and in
+    # the permissive direction. `cli._resolve_budget` applies DEFAULT_BUDGET_USD only
+    # when neither the config nor the manifest names a number.
+    budget_usd: float | None = None
     model: str | None = None  # None: whatever the manifest asks for
-    hub_path: Path = field(default_factory=lambda: DEFAULT_HUB.expanduser())
+    # None means "wherever registry.hub_path() says", which is the function that has
+    # always honoured TEACUP_HOME and appends the `agents` segment. Reimplementing it
+    # here read TEACUP_HOME only when a config file existed, dropped that segment, and
+    # so pointed the CLI at a directory the library would never publish into.
+    hub_path: Path | None = None
     auto_pull: bool = False
     ledger: bool = True
     json: bool = False
@@ -65,6 +73,11 @@ def load_config(explicit: str | Path | None = None) -> Config:
     """Read the config file, or return defaults if there is none."""
     path = config_path(explicit)
     if not path.is_file():
+        if explicit is not None:
+            # Typed on the command line this second. Falling back to defaults would run
+            # the agent under settings the caller did not ask for and say nothing —
+            # the one kind of config failure that must be loud.
+            raise FileNotFoundError(f"config file not found: {path}")
         return Config()
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -76,17 +89,18 @@ def load_config(explicit: str | Path | None = None) -> Config:
     output = _mapping(raw, "output")
 
     env_file = raw.get("env_file")
-    budget = defaults.get("budget_usd", DEFAULT_BUDGET_USD)
+    budget = defaults.get("budget_usd")
 
-    # TEACUP_HOME already existed before this file did and is documented as winning
-    # over hub.path — an environment variable beats a config file in the settings
-    # chain, and reversing that for one key would make the chain unpredictable.
-    hub_path = os.environ.get("TEACUP_HOME") or hub.get("path") or DEFAULT_HUB
+    # TEACUP_HOME is not read here: `registry.hub_path()` already honours it, and this
+    # file's job is to report what the *config* asked for. An environment variable
+    # beating a config file is the settings chain doing its job, and it does it in
+    # registry rather than twice, differently.
+    hub_setting = hub.get("path")
     return Config(
         env_file=Path(env_file).expanduser() if env_file else None,
         budget_usd=None if budget is None else float(budget),
         model=defaults.get("model") or None,
-        hub_path=Path(hub_path).expanduser(),
+        hub_path=Path(hub_setting).expanduser() if hub_setting else None,
         auto_pull=bool(hub.get("auto_pull", False)),
         ledger=bool(output.get("ledger", True)),
         json=bool(output.get("json", False)),

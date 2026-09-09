@@ -7,9 +7,9 @@ human can act on, not a KeyError from inside a run.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
-import os
 from pathlib import Path
 from typing import Any
 
@@ -281,7 +281,10 @@ class AgentSpec:
         """
         missing = []
         for name in self.environment_required:
-            value = os.environ.get(name, "").strip()
+            # Stripped the same way env.py strips a value it loads, quotes included:
+            # an exported OPENAI_API_KEY='sk-...' must not be a placeholder to one
+            # of them and a real key to the other.
+            value = os.environ.get(name, "").strip().strip("'\"")
             if not value or value.lower() in env_mod.PLACEHOLDERS:
                 missing.append(name)
         return tuple(missing)

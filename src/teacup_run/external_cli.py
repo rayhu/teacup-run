@@ -147,6 +147,7 @@ def run_external(
             answer="",
             ledger=ledger,
             stopped_early=True,
+            stop_kind="error",
             stop_reason=f"sandboxed run timed out after {result.elapsed_s:.0f}s",
         )
     if result.returncode not in (0, 1):  # neither "done" (0) nor "goal not met" (1) — a real crash
@@ -154,6 +155,7 @@ def run_external(
             answer="",
             ledger=ledger,
             stopped_early=True,
+            stop_kind="error",
             stop_reason=f"teacup-agent exited {result.returncode}: {result.stderr[-500:]}",
         )
 
@@ -163,6 +165,7 @@ def run_external(
             answer="",
             ledger=ledger,
             stopped_early=True,
+            stop_kind="error",
             stop_reason=f"could not parse --json output: {result.stdout[-500:]!r}",
         )
 
@@ -172,11 +175,19 @@ def run_external(
     ledger.record_tool_call("teacup-agent", cost_usd=spent)
 
     done = payload.get("status") == "done"
+    status = payload.get("status")
+    # The child reports max_steps / out_of_budget / out_of_time / error. §5's table has
+    # only two kinds, so out_of_budget maps to "budget" and everything else to "error".
+    # That flattens max_steps and out_of_time into "error", which is imprecise but is
+    # the safe direction: both are non-zero, and the alternative — leaving stop_kind
+    # None — made `teacup run` exit 0 for a run that never finished.
+    stop_kind = None if done else ("budget" if status == "out_of_budget" else "error")
     return Result(
         answer=payload.get("answer", ""),
         ledger=ledger,
         stopped_early=not done,
-        stop_reason=None if done else payload.get("status"),
+        stop_reason=None if done else status,
+        stop_kind=stop_kind,
     )
 
 

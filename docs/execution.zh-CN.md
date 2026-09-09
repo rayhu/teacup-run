@@ -1,6 +1,9 @@
 # 执行一个 agent
 
-**状态：** 提案，等待 review。以下内容尚未实现。
+**状态：** 已实现（2026-09-08）。本文件仍是设计文档；若它与
+`src/teacup_run/cli.py` 不一致，先改本文件，再改代码。
+**注意：** 英文版 [execution.md](execution.md) 是原稿，两者冲突时以英文版为准；
+§9 的两个开放问题已在英文版中回答。
 **范围：** `teacup run` 的设计。它所实现的那条规则 —— 执行一个 agent 不应该需要写
 Python —— 写在 [README](../README.zh-CN.md) 里。
 **翻译：** 本文是 [execution.md](execution.md) 的中文版。英文版为原文，两者不一致时以
