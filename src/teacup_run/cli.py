@@ -210,15 +210,25 @@ def _resolve_environment(args: argparse.Namespace, config: Config) -> tuple[Path
 
 
 def _resolve_budget(args: argparse.Namespace, config: Config, spec: AgentSpec) -> Budget:
-    """Flags beat config beat the manifest — the settings chain, applied to one field.
+    """The settings chain (§4) applied to one field: flag, then config, then manifest.
 
-    Only the dollar ceiling is overridable from the command line; the tool-call and
-    wall-clock ceilings stay the package's own, because a caller raising the budget has
-    said something about money and nothing about the other two.
+    Config above manifest is what the document specifies, and the money reading agrees
+    with it even though the key is named `defaults.budget_usd`: the person who owns the
+    machine should be able to cap what a package they downloaded may spend, and a
+    package that declares $5 should not be able to override a config that says $0.50.
+    The naming is the confusing half — it is a default in the sense of "what this
+    machine defaults to", not "what to fall back on".
+
+    Only the dollar ceiling is overridable here; the tool-call and wall-clock ceilings
+    stay the package's own, because a caller who set a budget has said something about
+    money and nothing about the other two.
     """
-    usd = args.budget if args.budget is not None else (
-        spec.budget_usd if spec.budget_usd is not None else config.budget_usd
-    )
+    if args.budget is not None:
+        usd = args.budget
+    elif config.budget_usd is not None:
+        usd = config.budget_usd
+    else:
+        usd = spec.budget_usd
     return Budget(
         usd=usd,
         max_tool_calls=spec.budget_max_tool_calls,

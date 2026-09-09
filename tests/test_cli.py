@@ -287,3 +287,27 @@ def test_an_absent_config_file_is_a_valid_state(tmp_path, monkeypatch):
     monkeypatch.setenv("TEACUP_CONFIG", str(tmp_path / "nope.yaml"))
     monkeypatch.delenv("TEACUP_HOME", raising=False)
     assert load_config() == Config()
+
+
+def test_the_config_budget_beats_the_packages_own(example, monkeypatch, capsys, tmp_path):
+    """§4's precedence, and the half that is easy to get backwards. The person who owns
+    the machine caps what a downloaded package may spend; a package declaring $5 must
+    not override a config that says $0.50."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defaults:\n  budget_usd: 0.02\n", encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+    _fake(monkeypatch, *GOOD)
+
+    cli.main(["run", example, "notes", "--no-dotenv", "--json"])
+    d = json.loads(capsys.readouterr().out)
+    assert d["budget"]["usd"] == 0.02  # not the manifest's 0.25
+
+
+def test_the_manifest_budget_is_used_when_the_config_names_none(example, monkeypatch, capsys, tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defaults:\n  budget_usd: null\n", encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+    _fake(monkeypatch, *GOOD)
+
+    cli.main(["run", example, "notes", "--no-dotenv", "--json"])
+    assert json.loads(capsys.readouterr().out)["budget"]["usd"] == 0.25
