@@ -9,6 +9,7 @@ provider. A CLI suite that needed a real key would be a CLI suite nobody runs.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -58,6 +59,31 @@ def example() -> str:
     a tmp_path, and resolving against the cwd would break every test from anywhere but
     the repo root anyway."""
     return str(REPO_ROOT / EXAMPLE)
+
+
+@pytest.fixture
+def bridge(tmp_path) -> str:
+    """A hermetic copy of `examples/teacup-agent-bridge`, with `teacup_agent.project_root`
+    repointed at a real (but otherwise unused) directory this fixture creates.
+
+    The real example's `project_root` (`../../../teacup-agent`) assumes a sibling
+    teacup-agent checkout next to this repo — true in a dev environment that clones both
+    side by side, false on a CI runner that checks out only this one repo.
+    `external_cli.check_wiring` genuinely `.is_dir()`-checks that path before any run
+    that goes through `cli.main()`'s preflight, so a test exercising that path needs
+    `project_root` to resolve to something real, not this repo's own directory layout.
+    """
+    src = REPO_ROOT / "examples" / "teacup-agent-bridge"
+    dst = tmp_path / "bridge"
+    shutil.copytree(src, dst)
+    fake_project_root = tmp_path / "fake-teacup-agent"
+    fake_project_root.mkdir()
+    manifest = dst / "agent.yaml"
+    text = manifest.read_text(encoding="utf-8")
+    rewritten = text.replace("project_root: ../../../teacup-agent", f"project_root: {fake_project_root}")
+    assert rewritten != text, "the real example's project_root line changed shape; update this fixture"
+    manifest.write_text(rewritten, encoding="utf-8")
+    return str(dst)
 
 
 def _fake(monkeypatch, *replies):
@@ -673,7 +699,7 @@ def test_a_config_env_file_that_is_absent_is_not_fatal(example, tmp_path, monkey
     assert "absent.env" in capsys.readouterr().err  # said, not silently ignored
 
 
-def test_a_ceiling_is_exit_two_whichever_backend_hit_it(tmp_path, monkeypatch, capsys):
+def test_a_ceiling_is_exit_two_whichever_backend_hit_it(bridge, tmp_path, monkeypatch, capsys):
     """The same manifest must not change exit code because of its `framework:` key.
 
     A wall-clock deadline is `BudgetExceeded` and exit 2 on the native loop; through the
@@ -696,9 +722,7 @@ def test_a_ceiling_is_exit_two_whichever_backend_hit_it(tmp_path, monkeypatch, c
             stderr="",
         ),
     )
-    external = cli.main(
-        ["run", str(REPO_ROOT / "examples/teacup-agent-bridge"), "task", "--no-dotenv"]
-    )
+    external = cli.main(["run", bridge, "task", "--no-dotenv"])
 
     # The native half of the same claim, so this asserts agreement rather than one
     # backend's behaviour in isolation.
@@ -812,10 +836,9 @@ def test_every_documented_config_key_is_accepted(example, tmp_path, monkeypatch)
     assert cli.main(["run", example, "notes", "--no-dotenv"]) == EXIT_OK
 
 
-def test_a_flag_that_cannot_take_effect_is_refused(monkeypatch, capsys):
+def test_a_flag_that_cannot_take_effect_is_refused(bridge, monkeypatch, capsys):
     """`--no-goal-loop` is a native-loop concept; the external backend runs its own
     loop and dropped the flag silently, doing the opposite of what was asked."""
-    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
     code = cli.main(["run", bridge, "task", "--no-dotenv", "--dry-run", "--no-goal-loop"])
 
     assert code == EXIT_PREFLIGHT
@@ -924,13 +947,12 @@ def _bridge_argv(monkeypatch, argv_list):
     return seen.get("argv", []), code
 
 
-def test_no_model_flag_means_the_target_picks_its_own(monkeypatch, capsys):
+def test_no_model_flag_means_the_target_picks_its_own(bridge, monkeypatch, capsys):
     """Forwarding the *resolved* model made every bridge run force the manifest's
     `model.primary` onto the child — a field that manifest calls "informational only
     for this framework", because the target checkout has its own configuration. So
     "the report named a model that never ran" would have been fixed by making the
     wrong model run."""
-    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
     argv, code = _bridge_argv(monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json"])
 
     assert code == EXIT_OK
@@ -938,9 +960,8 @@ def test_no_model_flag_means_the_target_picks_its_own(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["model"] is None
 
 
-def test_an_explicit_model_override_does_reach_the_target(monkeypatch, capsys):
+def test_an_explicit_model_override_does_reach_the_target(bridge, monkeypatch, capsys):
     """The other half: asked for, so it is forwarded, and reported because it is true."""
-    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
     argv, code = _bridge_argv(
         monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json", "--model", "claude-opus-5"]
     )
@@ -950,10 +971,9 @@ def test_an_explicit_model_override_does_reach_the_target(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["model"] == "claude-opus-5"
 
 
-def test_skill_on_a_bridge_package_names_the_real_reason(capsys):
+def test_skill_on_a_bridge_package_names_the_real_reason(bridge, capsys):
     """The refusal ran *after* `add_skill`, so `--skill foo` reported "could not enable
     skill 'foo'" — true, and the wrong problem."""
-    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
     code = cli.main(["run", bridge, "t", "--no-dotenv", "--dry-run", "--skill", "anything"])
 
     err = capsys.readouterr().err
@@ -1004,12 +1024,11 @@ def test_the_turn_limit_keeps_the_text_the_model_had_produced():
     assert "a partial thought worth keeping" in result.answer
 
 
-def test_a_model_override_equal_to_the_manifests_own_is_still_forwarded(monkeypatch, capsys):
+def test_a_model_override_equal_to_the_manifests_own_is_still_forwarded(bridge, monkeypatch, capsys):
     """Deciding "was it overridden?" by `self.model != spec.model_primary` drops
     `--model gpt-5` against a manifest whose primary is `gpt-5` — and the bridge
     example's primary *is* `gpt-5`, so this is the ordinary case, not a corner. The
     report named it and the child never saw it."""
-    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
     argv, code = _bridge_argv(
         monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json", "--model", "gpt-5"]
     )
@@ -1020,13 +1039,12 @@ def test_a_model_override_equal_to_the_manifests_own_is_still_forwarded(monkeypa
 
 
 def test_a_config_model_equal_to_the_manifests_own_is_still_forwarded(
-    monkeypatch, tmp_path, capsys
+    bridge, monkeypatch, tmp_path, capsys
 ):
     """Same collision, reached through `defaults.model` rather than the flag."""
     cfg = tmp_path / "config.yaml"
     cfg.write_text("defaults:\n  model: gpt-5\n", encoding="utf-8")
     monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
-    bridge = str(REPO_ROOT / "examples/teacup-agent-bridge")
     argv, code = _bridge_argv(monkeypatch, ["run", bridge, "t", "--no-dotenv", "--json"])
 
     assert code == EXIT_OK
@@ -1118,7 +1136,7 @@ def test_a_skill_that_escapes_the_package_is_skipped_not_fatal(tmp_path):
     spec.validate(tools=set(), checks=set())  # and the package still loads
 
 
-def test_a_bridge_run_reports_the_time_it_actually_took(monkeypatch, capsys):
+def test_a_bridge_run_reports_the_time_it_actually_took(bridge, monkeypatch, capsys):
     """`run_external` built a Ledger and stopped its clock on the next line, so every
     bridge run reported `elapsed_s: 0.0` however long the child ran — the one field in
     the §7 object that did not reconcile."""
@@ -1137,7 +1155,7 @@ def test_a_bridge_run_reports_the_time_it_actually_took(monkeypatch, capsys):
             stderr="",
         ),
     )
-    cli.main(["run", str(REPO_ROOT / "examples/teacup-agent-bridge"), "t", "--no-dotenv", "--json"])
+    cli.main(["run", bridge, "t", "--no-dotenv", "--json"])
     assert json.loads(capsys.readouterr().out)["elapsed_s"] >= 2.5
 
 
