@@ -44,6 +44,11 @@ class Result:
     tool_calls: tuple[str, ...] = ()
     stopped_early: bool = False
     stop_reason: str | None = None
+    # Why it stopped, as a value rather than as prose. `stop_reason` is written for a
+    # human and its two producers are a BudgetExceeded message and an f-string of an
+    # exception; a caller that needs to exit 2 for one and 3 for the other would have
+    # to parse that, which is a smell and would break the moment the wording changed.
+    stop_kind: str | None = None  # "budget" | "error" | None
 
     def render_ledger(self, budget: Budget | None = None) -> str:
         header = "Task stopped early" if self.stopped_early else "Task completed"
@@ -83,10 +88,16 @@ def run(
     checks = dict(checks or {})
 
     called: list[str] = []
-    best: tuple[tuple[int, int], str, GoalVerdict | None] | None = None
+    # (rank, answer, verdict, hit_turn_limit). The flag rides along because `best` can
+    # hold attempt 1 while the loop exits on attempt 3: reading the *last* attempt's
+    # flag reported "reached the turn limit before producing an answer" beside a
+    # complete answer produced by an attempt that hit no ceiling, and turned a plain
+    # goal-not-met run (exit 1) into a budget stop (exit 2).
+    best: tuple[tuple[int, int], str, GoalVerdict | None, bool] | None = None
     verdict: GoalVerdict | None = None
     stopped_early = False
     stop_reason: str | None = None
+    stop_kind: str | None = None
     answer = ""
     attempts = 0
     prompt = task
@@ -94,7 +105,7 @@ def run(
     while True:
         attempts += 1
         try:
-            answer = _one_attempt(
+            answer, hit_turn_limit = _one_attempt(
                 prompt,
                 model=model,
                 instructions=instructions,
@@ -107,31 +118,52 @@ def run(
                 max_turns=max_turns,
                 model_fn=model_fn,
             )
+            if not goal_checks:
+                # Nothing to judge it by, so the limit is the only signal there is that
+                # this run never answered — and reporting it as a completed run made
+                # `teacup run` exit 0, telling CI a run that ran out of turns succeeded.
+                if hit_turn_limit:
+                    stopped_early, stop_kind = True, "budget"
+                    stop_reason = _turn_limit_reason(max_turns)
+                break
+
+            # Inside the try, not after it. A check is ordinary Python written by
+            # whoever wrote the package, so it can raise — and when it did, the
+            # exception escaped `run()` entirely, taking the ledger with it. The model
+            # call had already been paid for; the caller got a traceback and no record
+            # of what it cost. "Cost is reported with the result, never separately."
+            attempt = Attempt(answer=answer, artifacts=artifacts, tool_calls=tuple(called))
+            verdict = evaluate(checks, goal_checks, attempt)
+            rank = (verdict.passed, len(answer.strip()))
+            if best is None or rank > best[0]:
+                best = (rank, answer, verdict, hit_turn_limit)
+
+            if verdict.met or attempts >= max_attempts:
+                answer, verdict, limited = best[1], best[2], best[3]
+                # A ceiling only matters when the goal was not reached: a run that hit
+                # its last turn *and* passed its checks did the job, and calling that
+                # an early stop would exit 2 for a success. The verdict is evaluated
+                # either way, which is what keeps benchmark scores where they were.
+                if limited and not (verdict and verdict.met):
+                    stopped_early, stop_kind = True, "budget"
+                    stop_reason = _turn_limit_reason(max_turns)
+                break
+
+            prompt = revision_prompt(
+                task, goal_description, answer, verdict, attempts, max_attempts
+            )
         except BudgetExceeded as exc:
-            stopped_early, stop_reason = True, exc.reason
+            stopped_early, stop_reason, stop_kind = True, exc.reason, "budget"
             answer = _fallback(best, answer, f"The run stopped before finishing: {exc.reason}")
             break
         except Exception as exc:  # noqa: BLE001 - surfaced with the ledger, not swallowed
-            stopped_early, stop_reason = True, f"{type(exc).__name__}: {exc}"
+            stopped_early, stop_reason, stop_kind = True, f"{type(exc).__name__}: {exc}", "error"
+            # Deliberately dropped: if the failure came out of `evaluate`, `verdict`
+            # still holds the *previous* attempt's verdict, and reporting that beside a
+            # crash is how a failed run gets to claim its goal was met.
+            verdict = None
             answer = _fallback(best, answer, f"The run failed: {stop_reason}")
             break
-
-        if not goal_checks:
-            break
-
-        attempt = Attempt(answer=answer, artifacts=artifacts, tool_calls=tuple(called))
-        verdict = evaluate(checks, goal_checks, attempt)
-        rank = (verdict.passed, len(answer.strip()))
-        if best is None or rank > best[0]:
-            best = (rank, answer, verdict)
-
-        if verdict.met or attempts >= max_attempts:
-            answer, verdict = best[1], best[2]
-            break
-
-        prompt = revision_prompt(
-            task, goal_description, answer, verdict, attempts, max_attempts
-        )
 
     ledger.stop_clock()
     return Result(
@@ -143,6 +175,7 @@ def run(
         tool_calls=tuple(called),
         stopped_early=stopped_early,
         stop_reason=stop_reason,
+        stop_kind=stop_kind,
     )
 
 
@@ -159,8 +192,10 @@ def _one_attempt(
     called: list[str],
     max_turns: int,
     model_fn: Callable[..., Reply],
-) -> str:
-    """The inner loop: model, tools, model, ... until it answers."""
+) -> tuple[str, bool]:
+    """The inner loop: model, tools, model, ... until it answers.
+
+    Returns the answer and whether the turn limit ended it rather than the model."""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": instructions},
         {"role": "user", "content": prompt},
@@ -177,7 +212,7 @@ def _one_attempt(
         )
 
         if not reply.tool_calls:
-            return reply.text
+            return reply.text, False
 
         messages.append(_assistant_message(reply))
         for call in reply.tool_calls:
@@ -194,7 +229,45 @@ def _one_attempt(
                 }
             )
 
-    return reply.text or "The run hit its turn limit before producing an answer."
+    # A ceiling, so it raises like the other ceilings rather than returning.
+    #
+    # Reaching here means the model was *still calling tools* on the last allowed turn:
+    # the loop returns the moment a reply has none. So the run did not finish, and
+    # returning its text as an ordinary answer made `stopped_early` False, which the CLI
+    # reports as exit 0 — a run that ran out of turns telling CI it succeeded. That is
+    # the same defect as an unclassified early stop, one layer down.
+    #
+    # `BudgetExceeded` and not a new exception type, because §5 has exactly one code for
+    # "ran out of an allowance you set" (2) and this is one: `max_tool_calls` and
+    # `deadline_s` already come through here. It also means the external backend's
+    # `max_steps` — the same concept in the child — can map to the same kind.
+    # Reported, not raised.
+    #
+    # Raising here was wrong in a way that took a second review to see: it skipped
+    # `evaluate()` further down, so `Result.goal` came back None, `evaluate.py` scored
+    # `goal_met=None` as 0, and a benchmark task that exhausted its turns but *passed
+    # its checks* dropped 0.3 of its quality score — enough to cross the 0.5 success
+    # threshold. Worse, only the `goal-loop` arm has checks, so `compare="goal_loop"`
+    # became biased against the thing it exists to measure.
+    #
+    # The caller decides what the limit means, once the verdict is in.
+    #
+    # `or _TURN_LIMIT_ANSWER` is not decoration — dropping it was a silent, three-way
+    # regression. `reply.text` is "" for a tool-calling turn, which is the *ordinary*
+    # shape of the reply that hits this line (the loop returns the moment a reply has
+    # no tool calls). So the answer went from a sentence to "", and: `evaluate.score`
+    # lost its keyword hits; `non_empty` started failing, so the goal loop retried and
+    # a note-taker run went from 1 attempt to 3 — a silent 3x on the commonest failure
+    # shape, for a library whose non-negotiable is that cost is reported with the
+    # result; and the human path lost the only place the turn limit was ever named.
+    return reply.text or _TURN_LIMIT_ANSWER, True
+
+
+_TURN_LIMIT_ANSWER = "The run hit its turn limit before producing an answer."
+
+
+def _turn_limit_reason(max_turns: int) -> str:
+    return f"reached the {max_turns}-turn limit before producing an answer"
 
 
 def _assistant_message(reply: Reply) -> dict[str, Any]:
@@ -218,7 +291,7 @@ def _assistant_message(reply: Reply) -> dict[str, Any]:
 
 
 def _fallback(
-    best: tuple[tuple[int, int], str, GoalVerdict | None] | None, answer: str, message: str
+    best: tuple[tuple[int, int], str, GoalVerdict | None, bool] | None, answer: str, message: str
 ) -> str:
     """Never lose a usable answer to a failed retry."""
     if best is not None and best[1].strip():

@@ -51,7 +51,9 @@ point. `target_repo` defaults to `project_root` — plain `run_external()` calls
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Sequence
@@ -68,6 +70,11 @@ _DEFAULT_DEADLINE_S = 600.0  # teacup-agent cli.py's own default
 _GRACE_S = 30.0  # headroom for teacup-agent's own forced wrap-up to finish and print JSON
 
 
+# The child's statuses that mean "ran out of an allowance", as opposed to "broke".
+# Kept beside the mapping rather than inline so the list is visible as a list.
+CEILING_STATUSES = frozenset({"out_of_budget", "out_of_time", "max_steps"})
+
+
 def run_external(
     spec: AgentSpec,
     task: str,
@@ -78,6 +85,7 @@ def run_external(
     target_repo: Path | None = None,
     extra_flags: Sequence[str] = (),
     run_dir: Path | None = None,
+    model: str | None = None,
 ) -> Result:
     """Run `spec` (a `framework != "teacup"` package) as a sandboxed subprocess,
     normalizing its output into teacup-run's own `Result`.
@@ -126,6 +134,7 @@ def run_external(
         agent_run_dir = run_dir if run_dir is not None else scratch_dir / "runs"
         argv = _build_argv(
             spec.entrypoint or "uv run teacup-agent",
+            model=model,
             project_root=project_root,
             task=task,
             budget=budget_usd,
@@ -140,6 +149,11 @@ def run_external(
         )
 
     ledger = Ledger()
+    # Seeded from what the sandbox actually measured, then stopped. Constructing the
+    # Ledger here and stopping it on the next line reported `elapsed_s: 0.0` and
+    # `cost.compute: 0.0` for every bridge run however long it took — the one field in
+    # the §7 object that did not reconcile with reality.
+    ledger.started_at = ledger.started_at - result.elapsed_s
     ledger.stop_clock()
 
     if result.timed_out:
@@ -147,6 +161,7 @@ def run_external(
             answer="",
             ledger=ledger,
             stopped_early=True,
+            stop_kind="error",
             stop_reason=f"sandboxed run timed out after {result.elapsed_s:.0f}s",
         )
     if result.returncode not in (0, 1):  # neither "done" (0) nor "goal not met" (1) — a real crash
@@ -154,6 +169,7 @@ def run_external(
             answer="",
             ledger=ledger,
             stopped_early=True,
+            stop_kind="error",
             stop_reason=f"teacup-agent exited {result.returncode}: {result.stderr[-500:]}",
         )
 
@@ -163,6 +179,7 @@ def run_external(
             answer="",
             ledger=ledger,
             stopped_early=True,
+            stop_kind="error",
             stop_reason=f"could not parse --json output: {result.stdout[-500:]!r}",
         )
 
@@ -172,12 +189,81 @@ def run_external(
     ledger.record_tool_call("teacup-agent", cost_usd=spent)
 
     done = payload.get("status") == "done"
+    status = payload.get("status")
+    # The child reports max_steps / out_of_budget / out_of_time / error, and §5 splits
+    # those two ways: 2 is "ran out of an allowance you set", 3 is "something broke".
+    # All three ceilings are the first. Flattening max_steps and out_of_time into
+    # "error" was defended as the safe direction, but it made the same manifest report
+    # a different exit code depending only on its `framework:` key — a wall-clock
+    # deadline is `BudgetExceeded` and exit 2 on the native loop and was exit 3 here.
+    # Anything unrecognised stays "error": an unknown status is not a known ceiling.
+    stop_kind = None if done else ("budget" if status in CEILING_STATUSES else "error")
     return Result(
         answer=payload.get("answer", ""),
         ledger=ledger,
         stopped_early=not done,
-        stop_reason=None if done else payload.get("status"),
+        stop_reason=None if done else status,
+        stop_kind=stop_kind,
     )
+
+
+def check_wiring(spec: AgentSpec) -> None:
+    """Everything about a `framework != "teacup"` package that can be checked without
+    launching it. Raises `ManifestError` naming the first thing that is wrong.
+
+    `--dry-run`'s promise is "the package is wired correctly and this machine is
+    configured to run it" (§6), and for this framework it checked none of that path:
+    a manifest with no `teacup_agent.project_root` passed dry-run and exited 0, then
+    failed the real run with a ManifestError. A wiring check that skips the wiring is
+    worse than none, because it answers.
+    """
+    root = _project_root(spec)
+    if not root.is_dir():
+        raise ManifestError(
+            f"{spec.name}: teacup_agent.project_root points at {root}, which is not a "
+            "directory"
+        )
+    entrypoint = spec.entrypoint or "uv run teacup-agent"
+    argv = shlex.split(entrypoint)
+    if not argv:
+        raise ManifestError(f"{spec.name}: entrypoint is empty")
+    # Checking only that the string splits answered "am I configured to run it?" with
+    # yes on a machine that has no such binary: `--dry-run` exited 0 and the real run
+    # died with FileNotFoundError. Same shape as the `project_root` case one field over.
+    # Three shapes, because they resolve three different ways and the first version of
+    # this check got two of them wrong:
+    #
+    # - an absolute path: `is_file()` alone let a mode-644 file pass preflight and die
+    #   at launch with PermissionError — the very failure this check exists to prevent,
+    #   so the executable bit is part of the question;
+    # - a path with a separator (`./run-agent`): `shutil.which` resolves it against
+    #   *this* process's cwd, but `run_sandboxed` launches the child with
+    #   `cwd=project_root` and `subprocess` chdirs before exec. So a correctly-wired
+    #   package was accepted or refused depending on where the user happened to be
+    #   standing, with a message blaming the machine;
+    # - a bare name: PATH, which `shutil.which` is exactly right for, and the child
+    #   inherits PATH via `sandbox._BASE_ENV_NAMES`.
+    program = Path(argv[0])
+    if program.is_absolute():
+        candidate = program
+    elif any(sep in argv[0] for sep in (os.sep, os.altsep) if sep):
+        # The raw string, not `program.parts`: pathlib normalizes "./run-agent" to
+        # ("run-agent",), so a parts check treats the commonest relative form as a bare
+        # name and sends it to PATH — exactly the bug this branch exists to fix.
+        candidate = root / program
+    else:
+        found = shutil.which(argv[0])
+        candidate = Path(found) if found else None
+
+    if candidate is None or not candidate.is_file():
+        raise ManifestError(
+            f"{spec.name}: entrypoint {argv[0]!r} was not found — this machine cannot "
+            f"run {spec.framework!r} packages until it is installed"
+        )
+    if not os.access(candidate, os.X_OK):
+        raise ManifestError(
+            f"{spec.name}: entrypoint {argv[0]!r} ({candidate}) is not executable"
+        )
 
 
 def _project_root(spec: AgentSpec) -> Path:
@@ -207,6 +293,7 @@ def _resolve_env(spec: AgentSpec) -> dict[str, str]:
 def _build_argv(
     entrypoint: str,
     *,
+    model: str | None,
     project_root: Path,
     task: str,
     budget: float,
@@ -233,6 +320,10 @@ def _build_argv(
     ]
     if live:
         argv.append("--live")
+    if model:
+        # The child takes `--model`; without this the override reached nothing and the
+        # run used the child's own default while the report named the requested one.
+        argv += ["--model", model]
     argv += list(extra_flags)
     return argv
 

@@ -41,6 +41,12 @@ class AutoAgent:
     tools: list[Tool] = field(default_factory=list)
     checks: dict[str, Check] = field(default_factory=dict)
     model: str = ""
+    # Whether `model` was *asked for* or merely inherited from the manifest.
+    # `from_pretrained` seeds `model` from `spec.model_primary`, so comparing the two
+    # cannot answer the question: `--model gpt-5` against a manifest whose primary is
+    # `gpt-5` is an override that compares equal. The CLI reported it and the backend
+    # dropped it — a model named as fact that the child never saw.
+    model_overridden: bool = False
     budget: Budget | None = None
     extra_instructions: list[str] = field(default_factory=list)
     enabled_skills: list[str] = field(default_factory=list)
@@ -129,6 +135,7 @@ class AutoAgent:
 
     def set_model(self, model: str) -> "AutoAgent":
         self.model = model
+        self.model_overridden = True
         return self
 
     def set_budget(self, budget: Budget | float | int) -> "AutoAgent":
@@ -167,7 +174,23 @@ class AutoAgent:
         if self.spec.framework != "teacup":
             from .external_cli import run_external
 
-            return run_external(self.spec, task, budget=resolved_budget.usd, live=live)
+            # An *override* is forwarded; the manifest's own value is not.
+            #
+            # `--model` used to reach nothing here while the CLI reported the requested
+            # name as fact. But `from_pretrained` seeds `self.model` from
+            # `spec.model_primary`, so forwarding `self.model` outright hands the child
+            # `--model <manifest primary>` on every run — and this manifest field is
+            # "informational only for this framework": the target checkout has its own
+            # configuration, possibly model profiles, and this would override it.
+            #
+            # "Was it asked for", not "does it differ from the manifest" — the second
+            # is what shipped first and it silently drops `--model X` whenever X equals
+            # the manifest's own primary, which the bridge example's `gpt-5` and any
+            # config-wide `defaults.model` both make an ordinary case, not a corner.
+            override = self.model if self.model_overridden else None
+            return run_external(
+                self.spec, task, budget=resolved_budget.usd, live=live, model=override or None
+            )
 
         return run(
             task,

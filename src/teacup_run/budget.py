@@ -155,7 +155,7 @@ class Ledger:
         if budget is not None and budget.usd is not None:
             out.append("")
             out.append(line("Budget", budget.usd))
-            out.append(line("Remaining", max(0.0, budget.usd - self.total_cost)))
+            out.append(line("Remaining", max(0.0, budget.remaining(self))))
         return "\n".join(out)
 
     def render_usage(self) -> str:
@@ -182,6 +182,20 @@ class Budget:
             raise BudgetExceeded(f"reached the {self.max_tool_calls}-tool-call limit")
         if self.deadline_s is not None and ledger.elapsed_s >= self.deadline_s:
             raise BudgetExceeded(f"reached the {self.deadline_s:.0f}s deadline")
+
+    def remaining(self, ledger: Ledger) -> float | None:
+        """Dollars left, or None when no dollar ceiling was set.
+
+        Signed, deliberately. A run can overshoot — the budget is checked *before* a
+        call, so the call that trips it has already been paid for — and a caller
+        reconciling `budget.usd - cost.total` against this number would get a
+        contradiction if it were clamped, with the size of the overrun surviving only in
+        `stop_reason`, the prose field `stop_kind` exists to stop people parsing.
+
+        The clamp stays in `Ledger.render`, where it belongs: "Remaining $0.00" is a
+        display choice for a human, and a negative allowance is not a thing to show.
+        """
+        return None if self.usd is None else self.usd - ledger.total_cost
 
     @classmethod
     def of(cls, value: "Budget | float | int | None") -> "Budget":

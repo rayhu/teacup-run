@@ -98,6 +98,7 @@ def test_run_external_reports_timeout(tmp_path, monkeypatch):
 def test_build_argv_inserts_project_after_uv_run(tmp_path):
     argv = _build_argv(
         "uv run teacup-agent",
+        model=None,
         project_root=tmp_path,
         task="do the thing",
         budget=0.1,
@@ -114,6 +115,7 @@ def test_build_argv_inserts_project_after_uv_run(tmp_path):
 def test_build_argv_leaves_non_uv_entrypoints_alone(tmp_path):
     argv = _build_argv(
         "some-other-cli",
+        model=None,
         project_root=tmp_path,
         task="t",
         budget=0.1,
@@ -125,3 +127,37 @@ def test_build_argv_leaves_non_uv_entrypoints_alone(tmp_path):
     assert argv[0] == "some-other-cli"
     assert "--project" not in argv
     assert "--live" not in argv
+
+
+def test_build_argv_forwards_the_model_override(tmp_path):
+    """`--model` reached nothing on this path: `AutoAgent.run` did not pass it and
+    `_build_argv` did not emit it, so the child answered with its own default while the
+    CLI's preflight echo and `--json` both reported the requested name as fact."""
+    argv = _build_argv(
+        "uv run teacup-agent",
+        model="claude-opus-5",
+        project_root=tmp_path,
+        task="t",
+        budget=0.1,
+        deadline=10.0,
+        live=True,
+        run_dir=tmp_path / "runs",
+        memory_path=tmp_path / "memory.json",
+    )
+    assert argv[argv.index("--model") + 1] == "claude-opus-5"
+
+
+def test_build_argv_omits_the_flag_when_no_model_was_asked_for(tmp_path):
+    """So the child keeps its own default rather than being handed the string 'None'."""
+    argv = _build_argv(
+        "uv run teacup-agent",
+        model=None,
+        project_root=tmp_path,
+        task="t",
+        budget=0.1,
+        deadline=10.0,
+        live=False,
+        run_dir=tmp_path / "runs",
+        memory_path=tmp_path / "memory.json",
+    )
+    assert "--model" not in argv

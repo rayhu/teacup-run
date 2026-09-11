@@ -18,9 +18,9 @@ that the ~80-line control loop fits in one head").
 
 ---
 
-### 1. `teacup run` — the CLI
+### 1. `teacup run` — the CLI — DONE (2026-09-08)
 
-**Now**: there is none. `pyproject.toml` declares no `[project.scripts]`, and running an
+**Was**: there was none. `pyproject.toml` declared no `[project.scripts]`, and running an
 agent means importing `AutoAgent` in Python — which contradicts the rule the README
 states as the reason this project exists ("executing an agent must not require writing
 Python").
@@ -45,11 +45,38 @@ the safer default), and **exit code 1 for "goal not met" stays as the table spec
 an agent that declared checks and failed them did not do the job, and the exit table is
 the contract. `--strict` can be added later without breaking it.
 
+**What shipped**: the nine outstanding table items. `stop_kind` on `Result`, so "budget"
+and "error" are told apart by a value rather than by parsing prose written for a human;
+`AgentSpec.missing_environment()`, kept out of `validate()` for the reason §2 gives;
+`Budget.remaining()` lifted out of `Ledger.render`; `load_env(search_cwd=False)`;
+`config.py`; `cli.py`; `[project.scripts]`; `.env.example`; and `tests/test_cli.py`.
+
+Two things the implementation learned that the design could not have. The CLI test suite
+fakes `model._call_openai`, **not** `loop.call_model` — `loop.run` takes
+`model_fn=call_model` as a default argument, bound when the function was defined, so
+patching the module attribute changes nothing and the test silently calls the real
+provider. And a run that crashes has no goal verdict, which is not the same as passing:
+reporting `goal.met: true` there would have called a failed run successful, so a missing
+verdict means "met" only when the run also completed.
+
+Not verified: no live provider call was made. The whole suite runs on the faked provider
+seam, so what is pinned is the CLI's own behaviour — preflight, exit codes, output
+separation, the JSON shape — and not that any particular model answers well.
+
 **Definition of done**: `uv run teacup run examples/note-taker "..."` works with no
 config file present; a missing declared environment variable fails at preflight with
 exit 4 and before any spend; `--json` puts exactly one object on stdout with the answer
 on stdout and the ledger on stderr; `--dry-run` completes with no key and no model call;
 each of the five exit codes is reachable and tested.
+
+---
+
+**Still open from this item**: `publish` must resolve the hub through
+`config.effective_hub()`, or reads and writes split. Today a config with `hub.path` and
+no `TEACUP_HOME` sends `teacup run` to the config's directory while `push_to_hub()` —
+which passes no explicit hub — writes to `registry.hub_path()`'s default. Only reachable
+from the library right now, because there is no `teacup publish` subcommand yet; it
+becomes user-visible the moment there is one.
 
 ---
 
@@ -71,10 +98,45 @@ it implies rather than inheriting them by accident: whether a pulled package's `
 runs in-process at all by default, what `--dry-run` may import, and whether the native
 in-process path deserves the sandbox the external path already gets.
 
+**Three concrete escalations, found by review of item 1 and left for this item**
+rather than half-fixed there, because each is a policy decision and not a bug:
+
+1. **`entrypoint:` is executed.** Any `framework:` other than `teacup` routes to
+   `run_external`, which `shlex.split`s the manifest's `entrypoint` string and runs it.
+   No `tools.py` and no network fetch are needed — a manifest alone is enough. Proven
+   during review with `entrypoint: "/bin/sh -c '...'"`, which ran as the user, from a
+   `--json` invocation, and wrote a file. The framework name is validated now, but that
+   changes nothing here: a hostile package simply writes `teacup-agent-cli`.
+
+   **And a manifest with no `entrypoint:` at all still gets there**, which the first
+   version of this entry missed. `run_external` defaults the entrypoint to
+   `uv run teacup-agent` and `_build_argv` inserts `--project <project_root>` — so
+   `framework: teacup-agent-cli` plus `teacup_agent: {project_root: .}` makes `uv` read
+   the *package's own* `pyproject.toml`, resolve and install the dependencies it
+   declares, and run its `[project.scripts]` console script. That is code execution
+   sourced from a second attacker-controlled file, and it reaches the network — the
+   thing `_check_auto_pull` holds up as what the default avoids. So the escalation is
+   not "do not write an entrypoint"; two independent manifest keys each reach execution.
+2. **`environment.required` is the child's env allowlist.** A package declares the
+   variable names it wants and `_resolve_env` hands exactly those to the subprocess —
+   so a package declaring `AWS_SECRET_ACCESS_KEY` gets it, and preflight *insists* the
+   variable be present before it will run. The mechanism that makes preflight helpful
+   is the one that makes this reachable.
+3. **`teacup_agent.project_root` sets the subprocess cwd *and* `uv`'s `--project`**
+   via `spec.root / value`, which `../..` or an absolute path escapes. Per 1, that
+   second role is a code-execution vector on its own, not just a working directory. Not containable without a decision:
+   `examples/teacup-agent-bridge` escapes on purpose, pointing at a sibling checkout.
+
+Manifest-declared paths *inside* the schema — `instructions:`, `read()`, `AGENTS.md` —
+are contained as of the CLI change (`AgentSpec._inside`), because there was no design
+question there: nothing legitimately points outside. These three have one.
+
 **Definition of done**: the document names, for each of the four verbs, what an attacker
 who controls a published package can reach; every default it recommends is either already
-the code's behaviour or has an issue linking to it; and item 1's CLI does not ship a
-`run` that is easier to point at a stranger than the library is.
+the code's behaviour or has an issue linking to it; the three escalations above each have
+a stated answer (allowlist, prompt-on-first-run, sandbox-by-default, or "accepted, and
+here is why"); and item 1's CLI does not ship a `run` that is easier to point at a
+stranger than the library is.
 
 ---
 

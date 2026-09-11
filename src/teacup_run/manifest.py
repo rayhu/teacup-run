@@ -7,12 +7,15 @@ human can act on, not a KeyError from inside a run.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from . import env as env_mod
 
 __all__ = [
     "AgentSpec",
@@ -25,6 +28,14 @@ __all__ = [
 ]
 
 MANIFEST_NAME = "agent.yaml"
+
+# Every value routes somewhere: "teacup" to the native loop, anything else to
+# `external_cli.run_external`, which splits the manifest's `entrypoint:` and executes
+# it. An unrecognised value therefore does not fail — it shells out. That makes a typo
+# (`framework: teacup-agent`) silently launch a subprocess instead of erroring, so the
+# set is closed. It is a correctness guard, not a security boundary: a hostile package
+# just writes one of these two names. See roadmap item 2.
+KNOWN_FRAMEWORKS = ("teacup", "teacup-agent-cli")
 AGENTS_MD_NAME = "AGENTS.md"
 
 # Agent Skills spec (platform.claude.com/docs/en/agents-and-tools/agent-skills):
@@ -91,9 +102,37 @@ class AgentSpec:
 
     # -- resources ---------------------------------------------------------
 
+    def _inside(self, relative: str) -> Path:
+        """Resolve a manifest-declared path, refusing to leave the package.
+
+        Every path in `agent.yaml` is written by whoever wrote the package, and
+        running a package you did not write is the entire point of the hub — so
+        `instructions: ../../.env` is not a hypothetical. That file is read into the
+        system prompt and sent to the provider, and `validate()` reads it during
+        `--dry-run`, the mode a cautious user runs *instead of* committing to the
+        package. So the check belongs here, at the resolve, rather than at each of
+        the three call sites that would each have to remember it.
+
+        `.resolve()` on both sides so a symlink planted inside the package is caught
+        too, not just a `..` in the manifest text.
+
+        This covers the paths the schema itself defines. It does not cover
+        `teacup_agent.project_root`, which is framework-specific, escapes the package
+        by design (the bridge points at a sibling checkout), and is part of the larger
+        "what may a foreign package do" question — roadmap item 2, not this function.
+        """
+        root = self.root.resolve()
+        path = (root / relative).resolve()
+        if path != root and root not in path.parents:
+            raise ManifestError(
+                f"refusing to read {relative!r}: it resolves outside the package "
+                f"({root}). A package may only read its own files."
+            )
+        return path
+
     def read(self, relative: str) -> str:
         """Read a file the manifest points at, relative to the package root."""
-        path = self.root / relative
+        path = self._inside(relative)
         try:
             return path.read_text(encoding="utf-8")
         except (FileNotFoundError, NotADirectoryError) as exc:
@@ -115,7 +154,7 @@ class AgentSpec:
         default is exactly the kind of scope creep this project's own threat model
         should decide on deliberately, not acquire by accident.
         """
-        path = self.root / AGENTS_MD_NAME
+        path = self._inside(AGENTS_MD_NAME)
         if not path.is_file():
             return None
         return path.read_text(encoding="utf-8").strip()
@@ -131,7 +170,7 @@ class AgentSpec:
         works as a Teacup Run package without also requiring Teacup's own file on
         top of a convention that already covers the same ground.
         """
-        own_path = self.root / self.instructions_path
+        own_path = self._inside(self.instructions_path)
         own = own_path.read_text(encoding="utf-8").strip() if own_path.is_file() else None
         agents = self.agents_md()
 
@@ -157,7 +196,15 @@ class AgentSpec:
         included: a skill with no procedure to load is exactly as unusable as one
         with no description), so a skill that validates in one repo validates in the
         other."""
-        text = self.read(f"skills/{skill}/SKILL.md")
+        try:
+            text = self.read(f"skills/{skill}/SKILL.md")
+        except ManifestError:
+            # Skipped, not fatal — which is what `available_skills` documents and what
+            # `skills.py`'s `discover()` does. A `skills/<name>` directory that is a
+            # symlink out of the package is refused by `_inside`, and raising here made
+            # `validate()` — and so the whole package — unloadable over one skill that
+            # simply should not be offered.
+            return None
         meta = parse_frontmatter(text)
         name = str(meta.get("name") or skill)
         description = str(meta.get("description", "")).strip()
@@ -244,7 +291,7 @@ class AgentSpec:
             name=str(require("name")),
             version=str(require("version")),
             description=str(data.get("description", "")),
-            framework=str(data.get("framework", "teacup")),
+            framework=_framework(data.get("framework", "teacup")),
             entrypoint=(str(data["entrypoint"]) if data.get("entrypoint") else None),
             model_primary=str(model["primary"]),
             model_fallback=(str(model["fallback"]) if model.get("fallback") else None),
@@ -262,6 +309,29 @@ class AgentSpec:
             root=root,
             raw=data,
         )
+
+    def missing_environment(self) -> tuple[str, ...]:
+        """Declared environment variables that are absent or still placeholders.
+
+        Deliberately **not** part of `validate()`. That runs inside
+        `from_pretrained()`, and this repo's own suite loads `examples/note-taker`
+        with a faked model and no key at all — enforcing there would make the library
+        unusable offline, which is the opposite of what a preflight check is for.
+        The CLI asks this question separately, once, before it spends anything.
+
+        A placeholder counts as missing for the same reason `env.py` refuses to load
+        one: a copied-but-unedited `.env` produces a 401 halfway through a run rather
+        than a message up front, and the second is the one worth having.
+        """
+        missing = []
+        for name in self.environment_required:
+            # Stripped the same way env.py strips a value it loads, quotes included:
+            # an exported OPENAI_API_KEY='sk-...' must not be a placeholder to one
+            # of them and a real key to the other.
+            value = os.environ.get(name, "").strip().strip("'\"")
+            if not value or value.lower() in env_mod.PLACEHOLDERS:
+                missing.append(name)
+        return tuple(missing)
 
     def validate(self, *, tools: set[str], checks: set[str]) -> None:
         """Cross-check the manifest against what the package actually provides."""
@@ -319,6 +389,16 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
         return {}
     parsed = yaml.safe_load(text[3:end])
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _framework(value: Any) -> str:
+    name = str(value)
+    if name not in KNOWN_FRAMEWORKS:
+        raise ManifestError(
+            f"{MANIFEST_NAME} declares framework {name!r}, which this version does not "
+            f"know how to run. Known frameworks: {', '.join(KNOWN_FRAMEWORKS)}."
+        )
+    return name
 
 
 def _as_float(value: Any) -> float | None:

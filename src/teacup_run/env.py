@@ -16,11 +16,19 @@ __all__ = ["load_env"]
 PLACEHOLDERS = frozenset({"sk-...", "your-key-here", "changeme", "todo", "xxx"})
 
 
-def load_env(path: str | Path | None = None, *, override: bool = False) -> Path | None:
+def load_env(
+    path: str | Path | None = None, *, override: bool = False, search_cwd: bool = True
+) -> Path | None:
     """Load `KEY=value` lines from a `.env`. Returns the file used, or None.
 
-    Searches the given path, then the working directory and its parents.
+    With `path`, reads exactly that file. Without one, searches the working
+    directory and its parents — a development affordance, not the mechanism, which
+    is why `search_cwd=False` exists: a production caller that means "use the
+    environment I was given" should be able to say so and not silently pick up a
+    stale `.env` from some parent directory.
     """
+    if path is None and not search_cwd:
+        return None
     for candidate in _candidates(path):
         if not candidate.is_file():
             continue

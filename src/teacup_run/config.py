@@ -1,0 +1,210 @@
+"""`~/.config/teacup/config.yaml` — settings, and deliberately never secrets.
+
+Two chains meet in the CLI and must not be merged. This module orders **settings**:
+CLI flags, then `TEACUP_*` environment variables, then this file, then the agent's
+manifest, then built-in defaults. `env.py` orders **credentials**, and a config file
+that could set `OPENAI_API_KEY` directly would undo that separation — which is why the
+schema has an `env_file` *pointer* and no place to put a value.
+
+That is also what keeps this file safe to commit. A file like this ends up in a
+dotfiles repository whether or not anyone intended it to, so it holds where the secrets
+live and not the secrets.
+
+Absent is a valid state. Every key has a default and the CLI must work with no config
+file at all — the first run of a freshly installed tool is exactly the run that has
+none.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from . import registry
+
+__all__ = ["Config", "load_config", "config_path"]
+
+ENV_VAR = "TEACUP_CONFIG"
+DEFAULT_PATH = Path("~/.config/teacup/config.yaml")
+DEFAULT_BUDGET_USD = 1.00
+
+
+@dataclass(frozen=True)
+class Config:
+    """Resolved settings. Field names match the YAML keys they come from."""
+
+    env_file: Path | None = None
+    # None means "this machine states no ceiling", which is different from stating one.
+    # The built-in default belongs *last* in §4's chain, after the manifest — parking it
+    # here made "no config file" beat a package's own declared budget, silently and in
+    # the permissive direction. `cli._resolve_budget` applies DEFAULT_BUDGET_USD only
+    # when neither the config nor the manifest names a number.
+    budget_usd: float | None = None
+    model: str | None = None  # None: whatever the manifest asks for
+    # None means "wherever registry.hub_path() says", which is the function that has
+    # always honoured TEACUP_HOME and appends the `agents` segment. Reimplementing it
+    # here read TEACUP_HOME only when a config file existed, dropped that segment, and
+    # so pointed the CLI at a directory the library would never publish into.
+    #
+    # This field is what the *config file* asked for. It is not what to use — read it
+    # through `effective_hub()`, which applies §4's precedence. Passing this straight
+    # to `registry.resolve` was the round-2 regression: `hub = hub or hub_path()` means
+    # a non-None value stops TEACUP_HOME from ever being consulted.
+    hub_path: Path | None = None
+    auto_pull: bool = False
+    ledger: bool = True
+    json: bool = False
+    source: Path | None = None  # which file this came from, for the preflight echo
+
+
+def config_path(explicit: str | Path | None = None) -> Path:
+    """Where the config would be read from, whether or not it exists.
+
+    Precedence is the settings chain's own: an explicit `--config` wins, then
+    `TEACUP_CONFIG`, then the XDG location. Returned even when absent so a caller can
+    say *which* file it looked for, which is the difference between "no config" and
+    "your config is somewhere else than you think".
+    """
+    if explicit is not None:
+        return Path(explicit).expanduser()
+    if os.environ.get(ENV_VAR):
+        return Path(os.environ[ENV_VAR]).expanduser()
+    return DEFAULT_PATH.expanduser()
+
+
+def load_config(explicit: str | Path | None = None) -> Config:
+    """Read the config file, or return defaults if there is none."""
+    path = config_path(explicit)
+    if path.is_dir():
+        raise ValueError(f"{path}: is a directory, not a config file")
+    if not path.is_file():
+        if explicit is not None:
+            # Typed on the command line this second. Falling back to defaults would run
+            # the agent under settings the caller did not ask for and say nothing —
+            # the one kind of config failure that must be loud.
+            raise FileNotFoundError(f"config file not found: {path}")
+        return Config()
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} must contain a YAML mapping, got {type(raw).__name__}")
+
+    defaults = _mapping(raw, "defaults")
+    hub = _mapping(raw, "hub")
+    output = _mapping(raw, "output")
+
+    # Strict, and strict *now*: this format ships in this PR, so there are no configs
+    # in the wild for it to break, and it is free today and expensive in three months.
+    #
+    # A dropped key always fails permissively, which is the direction that matters
+    # here: `defualts:\n  budget_usd: 0.05` left the user believing their machine caps
+    # spend at five cents while a downloaded package's own ceiling — whatever it says —
+    # applied instead. A settings file whose whole job is to constrain what someone
+    # else's code may spend cannot silently ignore the constraint.
+    _reject_unknown(path, raw, _TOP_LEVEL_KEYS, "")
+    _reject_unknown(path, defaults, _DEFAULTS_KEYS, "defaults.")
+    _reject_unknown(path, hub, _HUB_KEYS, "hub.")
+    _reject_unknown(path, output, _OUTPUT_KEYS, "output.")
+
+    env_file = raw.get("env_file")
+    budget = defaults.get("budget_usd")
+
+    # TEACUP_HOME is not read here: `registry.hub_path()` already honours it, and this
+    # file's job is to report what the *config* asked for. An environment variable
+    # beating a config file is the settings chain doing its job, and it does it in
+    # registry rather than twice, differently.
+    hub_setting = hub.get("path")
+    return Config(
+        env_file=Path(_text(path, "env_file", env_file)).expanduser() if env_file else None,
+        budget_usd=None if budget is None else float(budget),
+        model=_text(path, "defaults.model", defaults["model"]) if defaults.get("model") else None,
+        hub_path=Path(_text(path, "hub.path", hub_setting)).expanduser() if hub_setting else None,
+        auto_pull=_flag(path, "hub.auto_pull", hub.get("auto_pull", False)),
+        ledger=_flag(path, "output.ledger", output.get("ledger", True)),
+        json=_flag(path, "output.json", output.get("json", False)),
+        source=path,
+    )
+
+
+def effective_hub(config: Config) -> Path | None:
+    """Which hub directory to use, per §4: `TEACUP_HOME` wins over `hub.path`.
+
+    Returning `None` is how "let `registry.hub_path()` decide" is spelled, because
+    `registry.resolve` does `hub = hub or hub_path()` — so handing it any path at all,
+    including one derived from the environment, is what silences the environment. The
+    env branch therefore returns None rather than `hub_path()`, which looks redundant
+    and is the entire fix.
+
+    §4 says TEACUP_HOME "must keep winning over `hub.path`", and it must: §4's own
+    sample config contains `hub: path: ~/.teacup/agents`, so a user who copies the
+    documented example would otherwise disable TEACUP_HOME for `teacup run` while
+    `push_to_hub()` — which passes no explicit hub — still honours it. Reads and writes
+    would split across two directories, silently.
+    """
+    # `.strip()` matches `hub_path()`'s own reading, so the two agree on the narrow
+    # question "is the environment naming a hub?" — `TEACUP_HOME="   "` means no to
+    # both, rather than yes to one and no to the other.
+    #
+    # What that does *not* do, said plainly because the comment here previously claimed
+    # it did: reads and writes can still land in different directories. A config with
+    # `hub.path` and no `TEACUP_HOME` sends reads to the config's path while
+    # `push_to_hub()` — which passes no explicit hub — writes to `hub_path()`'s default.
+    # Closing that needs `publish` to resolve the hub through this same function, and
+    # there is no `teacup publish` yet. Roadmap item 1.
+    if (os.environ.get(registry.ENV_HOME) or "").strip():
+        return None
+    return config.hub_path
+
+
+_TOP_LEVEL_KEYS = frozenset({"env_file", "defaults", "hub", "output"})
+_DEFAULTS_KEYS = frozenset({"budget_usd", "model"})
+_HUB_KEYS = frozenset({"path", "auto_pull"})
+_OUTPUT_KEYS = frozenset({"ledger", "json"})
+
+
+def _reject_unknown(
+    path: Path, section: dict[str, Any], known: frozenset[str], prefix: str
+) -> None:
+    # `map(str, ...)`: YAML keys are not necessarily strings, and `sorted({1, "zz"})`
+    # raises TypeError — which escaped preflight and exited 3, "runtime error", for a
+    # config file that simply had a typo in it.
+    unknown = sorted(str(key) for key in set(section) - known)
+    if not unknown:
+        return
+    named = ", ".join(f"{prefix}{key}" for key in unknown)
+    expected = ", ".join(f"{prefix}{key}" for key in sorted(known))
+    raise ValueError(f"{path}: unknown config key(s): {named}. Known keys: {expected}.")
+
+
+def _text(path: Path, key: str, value: Any) -> str:
+    """A path-shaped setting must be a string. `Path([1, 2])` raises TypeError, which
+    is not what `load_config`'s caller catches, so a list here exited 3 rather than 4."""
+    if not isinstance(value, (str, Path)):
+        raise ValueError(f"{path}: config key {key!r} must be a path, got {type(value).__name__}")
+    return str(value)
+
+
+def _flag(path: Path, key: str, value: Any) -> bool:
+    """A YAML boolean, and only that.
+
+    `bool("false")` is `True`, so a quoted `auto_pull: "false"` — or `"no"`, or `"0"` —
+    silently *opened* the deny-by-default network gate the value was written to keep
+    shut. A settings file whose job is to constrain someone else's code cannot read a
+    denial as consent.
+    """
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{path}: config key {key!r} must be true or false, got {value!r}"
+        )
+    return value
+
+
+def _mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:
+    value = raw.get(key) or {}
+    if not isinstance(value, dict):
+        raise ValueError(f"config key {key!r} must be a mapping, got {type(value).__name__}")
+    return value

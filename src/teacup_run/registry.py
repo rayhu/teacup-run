@@ -44,9 +44,27 @@ class RegistryError(RuntimeError):
     """A reference could not be resolved, or a package could not be published."""
 
 
+# Named once so `config.effective_hub` can ask "is the environment speaking?" without
+# a second literal drifting from this one.
+ENV_HOME = "TEACUP_HOME"
+
+
 def hub_path() -> Path:
-    """Where pulled and published agents live. Override with `TEACUP_HOME`."""
-    return Path(os.environ.get("TEACUP_HOME", Path.home() / ".teacup")) / "agents"
+    """Where pulled and published agents live. Override with `TEACUP_HOME`.
+
+    `TEACUP_HOME` names the teacup home, not the agents directory — the `agents`
+    segment is appended here, so `TEACUP_HOME=~/.teacup` and the config's
+    `hub.path: ~/.teacup/agents` name the same directory. `expanduser` because the
+    value arrives as text from a shell profile or a `.env` file, where `~` is
+    ordinary; without it a literal `~` directory gets created under the cwd.
+    """
+    # `.strip()` and the falsy check together: `TEACUP_HOME=` (exported empty, which a
+    # shell profile does by accident) otherwise yields `agents` relative to the cwd, so
+    # the hub moves with wherever you happen to be standing. `resolve()` for the same
+    # reason on a relative value — it is still honoured, just pinned once.
+    raw = (os.environ.get(ENV_HOME) or "").strip()
+    home = Path(raw).expanduser().resolve() if raw else Path.home() / ".teacup"
+    return home / "agents"
 
 
 def _is_git_url(ref: str) -> bool:
