@@ -13,8 +13,8 @@ seams between those pieces, and the one verb that still requires writing Python.
 The dividing line with teacup-agent, stated once because it is what keeps both repos
 honest: **teacup-agent is one agent you can read and fork; teacup-run is the ecosystem
 around many agents.** A feature that would make teacup-agent a platform belongs here.
-Its own `AGENTS.md` says the same thing from the other side ("the value of this repo is
-that the ~80-line control loop fits in one head").
+Its own `AGENTS.md` says the same thing from the other side ("its value is that the
+control loop in `loop.py` fits in one head").
 
 ---
 
