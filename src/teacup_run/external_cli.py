@@ -51,6 +51,7 @@ point. `target_repo` defaults to `project_root` — plain `run_external()` calls
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import tempfile
@@ -229,12 +230,39 @@ def check_wiring(spec: AgentSpec) -> None:
     # Checking only that the string splits answered "am I configured to run it?" with
     # yes on a machine that has no such binary: `--dry-run` exited 0 and the real run
     # died with FileNotFoundError. Same shape as the `project_root` case one field over.
+    # Three shapes, because they resolve three different ways and the first version of
+    # this check got two of them wrong:
+    #
+    # - an absolute path: `is_file()` alone let a mode-644 file pass preflight and die
+    #   at launch with PermissionError — the very failure this check exists to prevent,
+    #   so the executable bit is part of the question;
+    # - a path with a separator (`./run-agent`): `shutil.which` resolves it against
+    #   *this* process's cwd, but `run_sandboxed` launches the child with
+    #   `cwd=project_root` and `subprocess` chdirs before exec. So a correctly-wired
+    #   package was accepted or refused depending on where the user happened to be
+    #   standing, with a message blaming the machine;
+    # - a bare name: PATH, which `shutil.which` is exactly right for, and the child
+    #   inherits PATH via `sandbox._BASE_ENV_NAMES`.
     program = Path(argv[0])
-    found = program.is_file() if program.is_absolute() else shutil.which(argv[0])
-    if not found:
+    if program.is_absolute():
+        candidate = program
+    elif any(sep in argv[0] for sep in (os.sep, os.altsep) if sep):
+        # The raw string, not `program.parts`: pathlib normalizes "./run-agent" to
+        # ("run-agent",), so a parts check treats the commonest relative form as a bare
+        # name and sends it to PATH — exactly the bug this branch exists to fix.
+        candidate = root / program
+    else:
+        found = shutil.which(argv[0])
+        candidate = Path(found) if found else None
+
+    if candidate is None or not candidate.is_file():
         raise ManifestError(
-            f"{spec.name}: entrypoint {argv[0]!r} is not on PATH — this machine cannot "
+            f"{spec.name}: entrypoint {argv[0]!r} was not found — this machine cannot "
             f"run {spec.framework!r} packages until it is installed"
+        )
+    if not os.access(candidate, os.X_OK):
+        raise ManifestError(
+            f"{spec.name}: entrypoint {argv[0]!r} ({candidate}) is not executable"
         )
 
 

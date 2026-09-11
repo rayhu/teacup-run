@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_PREFLIGHT
     try:
         return _run_command(args)
-    except Exception as exc:  # noqa: BLE001
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
         # Without this, an unhandled exception propagates out of main() and the
         # interpreter exits 1 — which §5 defines as "completed; goal not met". A crash
         # reported as a well-defined result is the exact confusion the table exists to
@@ -172,7 +172,18 @@ def _run_command(args: argparse.Namespace) -> int:
         print(pre.render(), file=sys.stderr)
         print(file=sys.stderr)
 
-    task = _read_task(args.task)
+    try:
+        task = _read_task(args.task)
+    except PreflightError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_PREFLIGHT
+    except (UnicodeDecodeError, OSError) as exc:
+        # Reading the task is part of starting, not part of running: a note-taker's
+        # whole job is piped notes, and a Latin-1 file gave a `UnicodeDecodeError` that
+        # reached `main()`'s catch-all — exit 3, "stopped early: runtime error", for a
+        # run that never began, with zero bytes on stdout under `--json`.
+        print(f"ERROR: could not read the task: {exc}", file=sys.stderr)
+        return EXIT_PREFLIGHT
 
     if args.dry_run:
         # A wiring check, not a run: it says the package is loadable and this machine is
@@ -189,10 +200,10 @@ def _run_command(args: argparse.Namespace) -> int:
         # prose to tell "the tool crashed" from "the agent failed" has no contract at
         # all. This path printed a stderr line and nothing on stdout.
         #
-        # Not *every* exit path, and the exception is deliberate: a preflight failure
-        # (exit 4) still prints nothing on stdout, because nothing was resolved yet —
-        # there is no agent, no budget and no ledger to describe, and inventing an
-        # object full of nulls would be a worse contract than none. `loop.run` catches its own
+        # Once the run starts, every exit path emits it. Nothing that fails *before*
+        # the run starts does (exit 4): nothing has been resolved yet — no agent, no
+        # budget, no ledger to describe — and inventing an object full of nulls would
+        # be a worse contract than none. `loop.run` catches its own
         # failures and keeps the ledger, so what reaches here spent nothing — hence an
         # empty Ledger rather than a lost one.
         reason = f"{type(exc).__name__}: {exc}"
@@ -217,7 +228,11 @@ def _preflight(args: argparse.Namespace) -> Preflight:
         # `yaml.YAMLError` is not a `ValueError`, so an unparsable config file used to
         # reach `main()`'s catch-all and exit 3 — "stopped early: runtime error" — for
         # a run that never started. §5 reserves 4 for exactly this.
-        raise PreflightError(f"{config_path(args.config)}: {exc}") from exc
+        # `config.py`'s own messages already name the file; only the bare ones from
+        # yaml/Path need it prefixed.
+        text = str(exc)
+        path = config_path(args.config)
+        raise PreflightError(text if str(path) in text else f"{path}: {text}") from exc
 
     _check_auto_pull(args.ref, config)
 
@@ -228,10 +243,17 @@ def _preflight(args: argparse.Namespace) -> Preflight:
         agent = AutoAgent.from_pretrained(args.ref, hub=effective_hub(config))
     except (ManifestError, RegistryError, FileNotFoundError, ValueError) as exc:
         raise PreflightError(f"could not load {args.ref!r}: {exc}") from exc
-    except Exception as exc:  # noqa: BLE001
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
         # A package's `tools.py` is arbitrary Python and can raise anything at import.
         # Left to `main()`'s catch-all it exited 3 naming neither the package nor the
         # file; loading is "did not start", which is 4.
+        #
+        # `SystemExit` explicitly, because it is a `BaseException` and so is the one
+        # thing `except Exception` cannot catch — while being what module-scope Python
+        # most often raises (`sys.exit("needs 3.12")` in a version guard). It escaped
+        # every handler here, and since `[project.scripts]` is `sys.exit(main())`, the
+        # *package* chose the process's exit code: `sys.exit(0)` in a `tools.py` told
+        # CI a run succeeded that never loaded, with nothing at all on stdout.
         raise PreflightError(
             f"could not load {args.ref!r}: {type(exc).__name__}: {exc}"
         ) from exc
@@ -391,6 +413,16 @@ def _resolve_budget(args: argparse.Namespace, config: Config, spec: AgentSpec) -
     code is right and the chain is the thing to argue with; meanwhile the user at least
     gets told, below, rather than finding out from an invoice.
     """
+    # `type=float` accepts "nan" and "-1". `Budget.check` compares with `>=`, and every
+    # comparison against NaN is False — so `--budget nan` silently removed the ceiling
+    # and a probe run spent $97.50 reporting `stopped.early: false`. For a library whose
+    # centre is "a budget is a constraint, not a receipt", that is the wrong direction
+    # to fail. It also put a bare `NaN` in the `--json` object, which is not JSON:
+    # Node's `JSON.parse` rejects it and `jq` silently yields null.
+    for source, value in (("--budget", args.budget), ("defaults.budget_usd", config.budget_usd)):
+        if value is not None and (value != value or value in (float("inf"), float("-inf")) or value < 0):
+            raise PreflightError(f"{source} must be a non-negative number, got {value!r}")
+
     from_manifest = False
     if args.budget is not None:
         usd = args.budget
@@ -417,7 +449,12 @@ def _resolve_budget(args: argparse.Namespace, config: Config, spec: AgentSpec) -
 
 def _read_task(task: str) -> str:
     """`-` means stdin, so notes can be piped in."""
-    return sys.stdin.read() if task == "-" else task
+    text = sys.stdin.read() if task == "-" else task
+    if not text.strip():
+        # `ref` got a guard and `task` did not, so an empty string was accepted and
+        # billed: a real model call asking the agent to do nothing.
+        raise PreflightError("the task is empty")
+    return text
 
 
 def _exit_code(result: Result, dry_run: bool) -> int:
@@ -446,7 +483,7 @@ def _emit(
         # non-ASCII character raises UnicodeEncodeError on any stdout that is not UTF-8
         # (PYTHONIOENCODING=ascii, a C-locale container), and the traceback exited 1 —
         # "completed, goal not met". `\uXXXX` is lossless and every JSON parser reads it.
-        print(json.dumps(_payload(result, pre, task, code, dry_run)))
+        print(json.dumps(_payload(result, pre, task, code, dry_run), allow_nan=False))
         return code
 
     if result.answer:
@@ -454,6 +491,11 @@ def _emit(
     if not quiet and pre.config.ledger:
         print(file=sys.stderr)
         print(result.render_ledger(budget=pre.budget), file=sys.stderr)
+        if result.stop_reason:
+            # The header says "Task stopped early" and nothing said why. Budget stops
+            # happen to carry their reason in the answer via `_fallback`; a ceiling
+            # that produces an answer does not, so the reason was nowhere.
+            print(f"Stopped because: {result.stop_reason}", file=sys.stderr)
         if dry_run:
             print(
                 "\n(--dry-run: the package loaded and this machine is configured to run "

@@ -9,6 +9,7 @@ provider. A CLI suite that needed a real key would be a CLI suite nobody runs.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -1073,7 +1074,7 @@ def test_dry_run_looks_for_the_entrypoint_binary(tmp_path, capsys):
     with FileNotFoundError."""
     root = _bridge_package(tmp_path, entrypoint="this-binary-does-not-exist --x")
     assert cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
-    assert "not on PATH" in capsys.readouterr().err
+    assert "was not found" in capsys.readouterr().err
 
 
 def _bridge_package(tmp_path, *, entrypoint, project_root=".") -> Path:
@@ -1151,7 +1152,15 @@ def test_an_empty_teacup_home_does_not_move_the_hub_to_the_cwd(monkeypatch, tmp_
     monkeypatch.chdir(tmp_path)
 
     assert registry.hub_path() == Path.home() / ".teacup" / "agents"
-    assert effective_hub(Config(hub_path=tmp_path / "from-config")) == tmp_path / "from-config"
+
+    # Whitespace-only, which is the value that separates the two readings: `""` is
+    # falsy to both with or without the `.strip()`, so asserting on it pinned nothing.
+    monkeypatch.setenv("TEACUP_HOME", "   ")
+    config = Config(hub_path=tmp_path / "from-config")
+    assert registry.hub_path() == Path.home() / ".teacup" / "agents"
+    assert effective_hub(config) == tmp_path / "from-config", (
+        "both must read a whitespace-only TEACUP_HOME as 'the environment is silent'"
+    )
 
 
 def test_a_package_whose_tools_py_raises_on_import_is_four_and_names_it(tmp_path, capsys):
@@ -1172,3 +1181,124 @@ def test_a_package_whose_tools_py_raises_on_import_is_four_and_names_it(tmp_path
     err = capsys.readouterr().err
     assert "could not load" in err and "explodes" in err
     assert "teacup failed" not in err
+
+
+# --- round 4: what the round-3 fixes themselves got wrong ---------------------
+
+
+def test_a_package_that_calls_sys_exit_at_import_cannot_choose_our_exit_code(
+    tmp_path, capsys
+):
+    """`SystemExit` is a `BaseException`, so `except Exception` never saw it — while
+    being what module-scope Python most often raises. `[project.scripts]` is
+    `sys.exit(main())`, so `sys.exit(0)` in a package's `tools.py` told CI a run
+    succeeded that never loaded, with nothing at all on stdout."""
+    root = tmp_path / "exiter"
+    (root / "prompts").mkdir(parents=True)
+    (root / "prompts" / "system.md").write_text("be helpful", encoding="utf-8")
+    (root / "agent.yaml").write_text(
+        "name: test/exiter\nversion: 0.1.0\ndescription: d.\n"
+        "model:\n  primary: gpt-5-mini\ninstructions: prompts/system.md\n"
+        "budget:\n  default_usd: 0.5\n",
+        encoding="utf-8",
+    )
+    (root / "tools.py").write_text("import sys\nsys.exit(0)\n", encoding="utf-8")
+
+    code = cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run", "--json"])
+    out, err = capsys.readouterr().out, None
+
+    assert code == EXIT_PREFLIGHT, "the package chose our exit code"
+    assert out == "", "exit 4 puts nothing on stdout"
+
+
+def test_a_task_that_cannot_be_decoded_is_four_not_three(example, monkeypatch, capsys):
+    """`_read_task` ran outside both try blocks, so a Latin-1 file piped into a
+    note-taker — whose whole job is piped notes — reached `main()`'s catch-all: exit 3,
+    "stopped early: runtime error", for a run that never began."""
+    class _Undecodable:
+        def read(self):
+            raise UnicodeDecodeError("utf-8", b"\xe9", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(sys, "stdin", _Undecodable())
+    assert cli.main(["run", example, "-", "--no-dotenv", "--json"]) == EXIT_PREFLIGHT
+    assert capsys.readouterr().out == ""
+
+
+def test_an_empty_task_is_refused_rather_than_billed(example):
+    assert cli.main(["run", example, "   ", "--no-dotenv"]) == EXIT_PREFLIGHT
+
+
+@pytest.mark.parametrize("value", ["nan", "-1", "inf"])
+def test_a_budget_that_is_not_a_budget_is_refused(example, capsys, value):
+    """`type=float` accepts all three, and `Budget.check` compares with `>=` — every
+    comparison against NaN is False, so `--budget nan` removed the ceiling entirely and
+    a probe run spent $97.50 reporting `stopped.early: false`. It also put a bare `NaN`
+    in the JSON, which Node's `JSON.parse` rejects and `jq` silently turns into null."""
+    assert cli.main(["run", example, "t", "--no-dotenv", "--budget", value]) == EXIT_PREFLIGHT
+    assert "non-negative" in capsys.readouterr().err
+
+
+def test_a_quoted_false_does_not_open_the_network_gate(example, tmp_path, monkeypatch, capsys):
+    """`bool("false")` is `True`. A settings file whose job is to constrain someone
+    else's code cannot read a denial as consent."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text('hub:\n  auto_pull: "false"\n', encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+
+    assert cli.main(["run", example, "t", "--no-dotenv"]) == EXIT_PREFLIGHT
+    assert "must be true or false" in capsys.readouterr().err
+
+
+def test_a_bad_defaults_model_is_four_not_three(example, tmp_path, monkeypatch, capsys):
+    """`_text` hardened `env_file` and `hub.path` and missed the third string-shaped
+    key. The list reached `--json` as the `model` field and the child's argv verbatim."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("defaults:\n  model: [a, b]\n", encoding="utf-8")
+    monkeypatch.setenv("TEACUP_CONFIG", str(cfg))
+
+    assert cli.main(["run", example, "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
+    assert "must be a path" in capsys.readouterr().err
+
+
+def test_a_config_that_is_a_directory_says_so(example, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("TEACUP_CONFIG", str(tmp_path))
+    assert cli.main(["run", example, "t", "--no-dotenv"]) == EXIT_PREFLIGHT
+    assert "is a directory" in capsys.readouterr().err
+
+
+def test_the_config_path_is_named_once_not_twice(example, tmp_path, capsys):
+    missing = tmp_path / "nope.yaml"
+    assert cli.main(["run", example, "t", "--no-dotenv", "--config", str(missing)]) == EXIT_PREFLIGHT
+    assert capsys.readouterr().err.count(str(missing)) == 1
+
+
+def test_a_non_executable_entrypoint_is_caught_at_dry_run(tmp_path, capsys):
+    """`is_file()` alone let a mode-644 file pass preflight and die at launch with
+    PermissionError — the exact failure this check exists to prevent."""
+    binary = tmp_path / "notexec"
+    binary.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    binary.chmod(0o644)
+    root = _bridge_package(tmp_path, entrypoint=f"{binary} --go")
+
+    assert cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run"]) == EXIT_PREFLIGHT
+    assert "not executable" in capsys.readouterr().err
+
+
+def test_a_relative_entrypoint_resolves_against_the_project_root(tmp_path, monkeypatch, capsys):
+    """`shutil.which("./run-agent")` asks *this* process's cwd, but the child is
+    launched with `cwd=project_root`. A correctly-wired package was accepted or refused
+    depending on where the user happened to be standing."""
+    root = _bridge_package(tmp_path, entrypoint="./run-agent")
+    launcher = root / "run-agent"
+    launcher.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    monkeypatch.chdir(tmp_path.parent)  # deliberately not the project root
+    assert cli.main(["run", str(root), "t", "--no-dotenv", "--dry-run"]) == EXIT_OK
+
+
+def test_the_human_ledger_says_why_it_stopped(example, monkeypatch, capsys):
+    """The header said "Task stopped early" and nothing said why."""
+    _fake(monkeypatch, *GOOD)
+    cli.main(["run", example, "notes", "--no-dotenv", "--budget", "0"])
+    assert "Stopped because:" in capsys.readouterr().err

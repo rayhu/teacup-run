@@ -159,10 +159,11 @@ a config file that could set `OPENAI_API_KEY` directly would undo §3.
 - **stdout** — `result.answer`, and nothing else.
 - **stderr** — the preflight echo and the cost ledger.
 - `--json` — one JSON object on stdout, and *nothing* else on stdout. One exception,
-  deliberate: a **preflight failure (exit 4) prints nothing on stdout**, because
-  nothing has been resolved yet — there is no agent, budget or ledger to describe, and
-  an object full of nulls would be a worse contract than none. Every other exit path,
-  including a failed run, emits the object.
+  deliberate: **nothing that fails before the run starts prints anything on stdout** —
+  a bad ref, an invalid manifest, a missing variable, an unreadable task (all exit 4).
+  Nothing has been resolved at that point: there is no agent, budget or ledger to
+  describe, and an object full of nulls would be a worse contract than none. Once the
+  run starts, every exit path emits the object, a failed run included.
 
 So `teacup run ... > answer.txt` leaves a clean file with the ledger still on
 the terminal, and `teacup run ... --json | jq .cost.total` works.
@@ -236,11 +237,16 @@ model that never ran. A `--model` override is forwarded and reported on both pat
 
 `goal.met` is `false` for a `--dry-run`, which evaluated nothing.
 
-Every field reads off `Result`, `GoalVerdict`, `Ledger` and `Budget` except one:
-`dry_run`, which is not on `Result` at all because a dry run never produces one.
-(Two others were exceptions when this was written and are not any more —
-`stopped.kind` is a field on `Result` and `budget.remaining` is a method on
-`Budget`, both added by this change.) Without it `--json --dry-run` is indistinguishable
+The run's *outcome* — `answer`, `goal`, `attempts`, `tool_calls`, `cost`, `usage`,
+`budget`, `stopped`, `elapsed_s` — reads straight off `Result`, `GoalVerdict`,
+`Ledger` and `Budget`, so the object cannot drift from what the run actually did.
+The rest is what the invocation knew: `agent` from `AgentSpec` and the ref, `model`
+and `task` from the resolved settings, `dry_run` and `exit_code` from the CLI.
+
+(This sentence has now been wrong twice in opposite directions — first counting
+`stopped.kind` and `budget.remaining` as exceptions after this change had added them
+to `Result` and `Budget`, then narrowing to "one exception" while six fields do not
+come off those objects at all. Hence naming the fields rather than counting them.) Without it `--json --dry-run` is indistinguishable
 from a real run that returned an empty answer at zero cost, which is exactly the
 confusion §6 warns about — a wiring check must not be mistakable for a run.
 

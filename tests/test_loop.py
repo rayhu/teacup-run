@@ -170,6 +170,11 @@ def test_the_turn_limit_still_evaluates_the_goal():
 
 
 def test_the_turn_limit_is_an_early_stop_when_the_goal_was_not_met():
+    """The check has to be one the fallback sentence cannot satisfy.
+
+    Written first against `non_empty`, which the fallback *does* satisfy — so the test
+    was asserting the regression (an empty answer) rather than the behaviour.
+    """
     replies = [tool_reply("note", {"text": str(i)}) for i in range(20)]
     model = FakeModel(*replies)
 
@@ -178,8 +183,8 @@ def test_the_turn_limit_is_an_early_stop_when_the_goal_was_not_met():
         model="gpt-5",
         instructions="",
         tools=[note],
-        checks={"non_empty": lambda attempt: "" if attempt.answer.strip() else "no answer"},
-        goal_checks=("non_empty",),
+        checks={"says_done": lambda attempt: "" if "DONE" in attempt.answer else "never said DONE"},
+        goal_checks=("says_done",),
         max_turns=3,
         model_fn=model,
     )
@@ -187,3 +192,51 @@ def test_the_turn_limit_is_an_early_stop_when_the_goal_was_not_met():
     assert result.goal is not None and result.goal.met is False
     assert result.stopped_early
     assert result.stop_kind == "budget"
+
+
+def test_the_turn_limit_still_answers_rather_than_returning_nothing():
+    """`reply.text` is "" for a tool-calling turn, which is the ordinary shape of the
+    reply that hits the limit. Dropping the `or <sentence>` fallback cost three things
+    at once: `evaluate.score` lost its keyword hits, `non_empty` began failing so the
+    goal loop retried (1 attempt became 3 — a silent 3x in spend), and the human path
+    lost the only place the turn limit was ever named."""
+    model = FakeModel(*[tool_reply("note", {"text": str(i)}) for i in range(20)])
+
+    result = run("task", model="gpt-5", instructions="", tools=[note], max_turns=3, model_fn=model)
+
+    assert result.answer.strip(), "a turn-limited run must still say something"
+    assert "turn limit" in result.answer
+
+
+def test_a_ceiling_on_a_later_attempt_does_not_relabel_an_earlier_complete_answer():
+    """`best` can hold attempt 1 while the loop exits on attempt 3. Reading the last
+    attempt's flag reported "reached the turn limit before producing an answer" beside
+    a complete answer from an attempt that hit no ceiling, and turned a plain
+    goal-not-met run (exit 1) into a budget stop (exit 2)."""
+    # Longer than the turn-limit fallback sentence, so `best`'s length tiebreak really
+    # does keep attempt 1. (The two round-3 defects hid each other: with the fallback
+    # dropped, attempt 2's answer was "" and attempt 1 won on length automatically —
+    # which is how this was first seen. Restoring the sentence makes the ranking
+    # honest, so the scenario has to earn its place at the top rather than inherit it.)
+    first = text_reply(
+        "A complete answer that simply misses the goal, at more length than the "
+        "turn-limit fallback sentence so that it genuinely ranks highest."
+    )
+    model = FakeModel(first, *[tool_reply("note", {"text": str(i)}) for i in range(20)])
+
+    result = run(
+        "task",
+        model="gpt-5",
+        instructions="",
+        tools=[note],
+        checks={"says_done": lambda attempt: "" if "DONE" in attempt.answer else "never said DONE"},
+        goal_checks=("says_done",),
+        max_attempts=2,
+        max_turns=3,
+        model_fn=model,
+    )
+
+    assert result.answer.startswith("A complete answer that simply misses the goal")
+    assert not result.stopped_early, "the returned answer hit no ceiling"
+    assert result.stop_kind is None
+    assert result.goal is not None and result.goal.met is False

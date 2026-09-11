@@ -173,9 +173,10 @@ stop_kind: str | None = None   # "budget" | "error" | None
 `out_of_budget` / `out_of_time` / `max_steps` 映射到同一个 kind。其余是 3。这条规则要防的
 失败是：同一个 manifest 仅仅因为 `framework:` 不同就给出不同的退出码。
 
-一个例外，是刻意的：**preflight 失败（退出码 4）在 `--json` 下不输出任何 stdout**。那时
-还什么都没解析出来 —— 没有 agent、没有 budget、没有 ledger 可以描述，硬造一个全是 null
-的对象比不输出更糟。
+一个例外，是刻意的：**凡是在运行开始之前就失败的，都不往 stdout 输出任何东西** ——
+ref 无效、manifest 非法、变量缺失、task 读不出来（都是退出码 4）。那时还什么都没解析
+出来 —— 没有 agent、没有 budget、没有 ledger 可以描述，硬造一个全是 null 的对象比不
+输出更糟。一旦运行开始，每条退出路径都会输出该对象，失败的运行也不例外。
 
 ## 6. `--dry-run`
 
@@ -220,10 +221,15 @@ stop_kind: str | None = None   # "budget" | "error" | None
 
 `goal.met` 在 `--dry-run` 下是 `false` —— 接线检查什么都没评估。
 
-除一个字段外，其余都能从 `Result`、`GoalVerdict`、`Ledger`、`Budget` 上直接读到。唯一的
-例外是 `dry_run`，它根本不在 `Result` 上，因为 dry run 不产生 `Result`。（写这份设计时
-还有另外两个例外，现在不是了：`stopped.kind` 已是 `Result` 的字段，`budget.remaining`
-已是 `Budget` 的方法，两者都由本次改动加上。）
+这次运行的**结果** —— `answer`、`goal`、`attempts`、`tool_calls`、`cost`、`usage`、
+`budget`、`stopped`、`elapsed_s` —— 都直接读自 `Result`、`GoalVerdict`、`Ledger`、
+`Budget`，所以这个对象不可能和运行的实际情况脱节。其余的是这次调用本身就知道的：
+`agent` 来自 `AgentSpec` 和 ref，`model` 和 `task` 来自解析后的设置，`dry_run` 和
+`exit_code` 来自 CLI。
+
+（这句话已经朝两个相反的方向各错过一次 —— 先是把 `stopped.kind` 和 `budget.remaining`
+仍算作例外，而本次改动恰恰已经把它们加到了 `Result` 和 `Budget` 上；然后又收窄成「只有
+一个例外」，而实际上有六个字段根本不来自这些对象。所以这里改成点名字段，不再数数。）
 
 ## 8. 实施计划
 

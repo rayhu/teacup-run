@@ -79,6 +79,8 @@ def config_path(explicit: str | Path | None = None) -> Path:
 def load_config(explicit: str | Path | None = None) -> Config:
     """Read the config file, or return defaults if there is none."""
     path = config_path(explicit)
+    if path.is_dir():
+        raise ValueError(f"{path}: is a directory, not a config file")
     if not path.is_file():
         if explicit is not None:
             # Typed on the command line this second. Falling back to defaults would run
@@ -119,11 +121,11 @@ def load_config(explicit: str | Path | None = None) -> Config:
     return Config(
         env_file=Path(_text(path, "env_file", env_file)).expanduser() if env_file else None,
         budget_usd=None if budget is None else float(budget),
-        model=defaults.get("model") or None,
+        model=_text(path, "defaults.model", defaults["model"]) if defaults.get("model") else None,
         hub_path=Path(_text(path, "hub.path", hub_setting)).expanduser() if hub_setting else None,
-        auto_pull=bool(hub.get("auto_pull", False)),
-        ledger=bool(output.get("ledger", True)),
-        json=bool(output.get("json", False)),
+        auto_pull=_flag(path, "hub.auto_pull", hub.get("auto_pull", False)),
+        ledger=_flag(path, "output.ledger", output.get("ledger", True)),
+        json=_flag(path, "output.json", output.get("json", False)),
         source=path,
     )
 
@@ -143,9 +145,16 @@ def effective_hub(config: Config) -> Path | None:
     `push_to_hub()` — which passes no explicit hub — still honours it. Reads and writes
     would split across two directories, silently.
     """
-    # `.strip()` matches `hub_path()`'s own reading of the variable, so the two cannot
-    # disagree about whether the environment is speaking — disagreeing is exactly the
-    # silent read/write split this function exists to prevent.
+    # `.strip()` matches `hub_path()`'s own reading, so the two agree on the narrow
+    # question "is the environment naming a hub?" — `TEACUP_HOME="   "` means no to
+    # both, rather than yes to one and no to the other.
+    #
+    # What that does *not* do, said plainly because the comment here previously claimed
+    # it did: reads and writes can still land in different directories. A config with
+    # `hub.path` and no `TEACUP_HOME` sends reads to the config's path while
+    # `push_to_hub()` — which passes no explicit hub — writes to `hub_path()`'s default.
+    # Closing that needs `publish` to resolve the hub through this same function, and
+    # there is no `teacup publish` yet. Roadmap item 1.
     if (os.environ.get(registry.ENV_HOME) or "").strip():
         return None
     return config.hub_path
@@ -177,6 +186,21 @@ def _text(path: Path, key: str, value: Any) -> str:
     if not isinstance(value, (str, Path)):
         raise ValueError(f"{path}: config key {key!r} must be a path, got {type(value).__name__}")
     return str(value)
+
+
+def _flag(path: Path, key: str, value: Any) -> bool:
+    """A YAML boolean, and only that.
+
+    `bool("false")` is `True`, so a quoted `auto_pull: "false"` — or `"no"`, or `"0"` —
+    silently *opened* the deny-by-default network gate the value was written to keep
+    shut. A settings file whose job is to constrain someone else's code cannot read a
+    denial as consent.
+    """
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{path}: config key {key!r} must be true or false, got {value!r}"
+        )
+    return value
 
 
 def _mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:

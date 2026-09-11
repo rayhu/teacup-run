@@ -71,6 +71,15 @@ each of the five exit codes is reachable and tested.
 
 ---
 
+**Still open from this item**: `publish` must resolve the hub through
+`config.effective_hub()`, or reads and writes split. Today a config with `hub.path` and
+no `TEACUP_HOME` sends `teacup run` to the config's directory while `push_to_hub()` —
+which passes no explicit hub — writes to `registry.hub_path()`'s default. Only reachable
+from the library right now, because there is no `teacup publish` subcommand yet; it
+becomes user-visible the moment there is one.
+
+---
+
 ### 2. A threat model for running someone else's agent
 
 **Now**: `sandbox.py` exists and `run_external` uses it, but there is no document saying

@@ -88,7 +88,12 @@ def run(
     checks = dict(checks or {})
 
     called: list[str] = []
-    best: tuple[tuple[int, int], str, GoalVerdict | None] | None = None
+    # (rank, answer, verdict, hit_turn_limit). The flag rides along because `best` can
+    # hold attempt 1 while the loop exits on attempt 3: reading the *last* attempt's
+    # flag reported "reached the turn limit before producing an answer" beside a
+    # complete answer produced by an attempt that hit no ceiling, and turned a plain
+    # goal-not-met run (exit 1) into a budget stop (exit 2).
+    best: tuple[tuple[int, int], str, GoalVerdict | None, bool] | None = None
     verdict: GoalVerdict | None = None
     stopped_early = False
     stop_reason: str | None = None
@@ -131,15 +136,15 @@ def run(
             verdict = evaluate(checks, goal_checks, attempt)
             rank = (verdict.passed, len(answer.strip()))
             if best is None or rank > best[0]:
-                best = (rank, answer, verdict)
+                best = (rank, answer, verdict, hit_turn_limit)
 
             if verdict.met or attempts >= max_attempts:
-                answer, verdict = best[1], best[2]
+                answer, verdict, limited = best[1], best[2], best[3]
                 # A ceiling only matters when the goal was not reached: a run that hit
                 # its last turn *and* passed its checks did the job, and calling that
                 # an early stop would exit 2 for a success. The verdict is evaluated
                 # either way, which is what keeps benchmark scores where they were.
-                if hit_turn_limit and not (verdict and verdict.met):
+                if limited and not (verdict and verdict.met):
                     stopped_early, stop_kind = True, "budget"
                     stop_reason = _turn_limit_reason(max_turns)
                 break
@@ -246,7 +251,19 @@ def _one_attempt(
     # became biased against the thing it exists to measure.
     #
     # The caller decides what the limit means, once the verdict is in.
-    return reply.text, True
+    #
+    # `or _TURN_LIMIT_ANSWER` is not decoration — dropping it was a silent, three-way
+    # regression. `reply.text` is "" for a tool-calling turn, which is the *ordinary*
+    # shape of the reply that hits this line (the loop returns the moment a reply has
+    # no tool calls). So the answer went from a sentence to "", and: `evaluate.score`
+    # lost its keyword hits; `non_empty` started failing, so the goal loop retried and
+    # a note-taker run went from 1 attempt to 3 — a silent 3x on the commonest failure
+    # shape, for a library whose non-negotiable is that cost is reported with the
+    # result; and the human path lost the only place the turn limit was ever named.
+    return reply.text or _TURN_LIMIT_ANSWER, True
+
+
+_TURN_LIMIT_ANSWER = "The run hit its turn limit before producing an answer."
 
 
 def _turn_limit_reason(max_turns: int) -> str:
@@ -274,7 +291,7 @@ def _assistant_message(reply: Reply) -> dict[str, Any]:
 
 
 def _fallback(
-    best: tuple[tuple[int, int], str, GoalVerdict | None] | None, answer: str, message: str
+    best: tuple[tuple[int, int], str, GoalVerdict | None, bool] | None, answer: str, message: str
 ) -> str:
     """Never lose a usable answer to a failed retry."""
     if best is not None and best[1].strip():
