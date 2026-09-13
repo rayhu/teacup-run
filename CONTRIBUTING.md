@@ -2,7 +2,9 @@
 
 Teacup Run is an early-stage, experimental project. APIs and terminology are still
 expected to move. This file is a map of where things live and what's actually checked,
-not a formal process.
+not a formal process. What the project is *for* — the capabilities it owes, the invariants
+a fork must keep, and the criteria a change can fail — is [`docs/intent.md`](docs/intent.md);
+read that before proposing something that changes the shape of the thing.
 
 ## Before anything else
 
