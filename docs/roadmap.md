@@ -10,7 +10,9 @@ directory and optionally git with no server, budgeted evaluation, goal checks, t
 sandboxed subprocess launcher, and `run_coding_task`. What is missing is mostly the
 seams between those pieces, the one verb that still requires writing Python, and #7: a
 run reports everything it did and then keeps none of it, which is why "is my fork better"
-has no command and why a browsable front end has nothing to read.
+has no command and why a browsable front end has nothing to read. #7 → #8 → #9 are that
+one path: keep the record, give it a long-lived local process, then render it — none of
+which crosses a machine boundary, which is what keeps them out of intent §7's non-goals.
 
 The dividing line with teacup-agent, stated once because it is what keeps both repos
 honest: **teacup-agent is one agent you can read and fork; teacup-run is the ecosystem
@@ -293,12 +295,103 @@ it extends, rather than in a comment; intent §3 gains a row for it that names t
 document instead of "none yet"; and `uv run pytest` stays hermetic — the tests must not
 write into a real `$TEACUP_HOME`.
 
-**Not this item, and deliberately after it**: `teacup site` — a static page generated from
-the hub directory and this run history: which agents exist, what each was derived from,
-what their benchmarks and costs say, and what has been run. It should stay a generator
-with no server and no build step (intent §4.3: readable, hackable, friendly to git), and
-it inherits a threat-model question item 2 has not answered yet — it would render
-`name`, `description` and `AGENT.md` written by whoever published the package, so every
-one of those strings is untrusted text on a page. Writing the record first means that
-item is a view, not a rewrite.
+**Not this item, and deliberately after it**: #8 (`teacup serve`, the long-lived local
+mode that makes records visible while they are being written) and #9 (`teacup site`, the
+page that renders them). Writing the record first is what makes both of those a view
+rather than a rewrite.
+
+---
+
+### 8. `teacup serve` — a long-lived local mode, not a control plane
+
+**Now**: `teacup --help` offers exactly one subcommand, `run`. A run is a foreground call
+in the caller's own process, so nothing outlives it, nothing else can see it, and the set
+of "agents running right now" is never larger than one.
+
+Worse for anything long-lived: the native path executes a pulled package's Python **in the
+caller's own interpreter**. `auto.py` resolves `tools.py` and `checks.py` with
+`importlib.util.spec_from_file_location` and `spec.loader.exec_module` — a stranger's code
+in this process, with this process's environment and privileges. Today that is contained by
+what the process is: a one-shot run the user typed themselves. The external-backend path
+already does the opposite and does it properly — `sandbox.py` launches a subprocess with an
+explicit `cwd`, severed `stdin`, an env allowlist and resource limits.
+
+Intent §7 rules out an enterprise control plane and a registry server. Those are
+*cross-machine, multi-tenant* things. A process on the user's own machine, bound to
+loopback, running with the credentials that user already has in their own shell, changes no
+trust boundary — it is the CLI with a longer life. It is also the missing half of #7 (a
+record you can watch being written, not only read afterwards) and the thing #9 talks to.
+
+**What to change**: `teacup serve`, in the same console script.
+
+- **Loopback only.** Bind `127.0.0.1` and refuse any other bind rather than offering a flag
+  that quietly exposes it. Intent §4 and AGENTS-style naming: a flag must not lie about
+  what it does, and "prefer explicit over convenient" applies hardest to the one setting
+  that changes who can reach a code-execution endpoint.
+- **No auth, no users, no TLS — deliberately.** On loopback there is nobody to
+  authenticate. Adding them would mean the cross-machine product intent §7 rules out, and
+  the day a non-loopback bind is actually wanted, item 2's threat model is the
+  *prerequisite*, not the follow-up.
+- **Surface = the contract that already exists.** `docs/execution.md` §7's object over HTTP
+  instead of stdout: list the hub, start a run, read a run record (#7), stream progress.
+  Nothing new to design; a consumer that can read `--json` can read this.
+- **The hard rule: `serve` never executes a package in its own process.** Every run it
+  starts goes through `sandbox.py`'s subprocess path; `exec_module` is never reached from
+  the serving process. Three reasons, each already paid for elsewhere in this repo: a
+  package that crashes must not take the service with it; the timeout and resource limits
+  only exist on the subprocess path; and a stranger's code must never share an address
+  space and an environment with a process that outlives the run. Item 2's three
+  escalations (`entrypoint:` is executed, `environment.required` is the child's env
+  allowlist, `teacup_agent.project_root` escapes) are survivable at "I typed this once" and
+  are not survivable in something that stays up.
+- Bounded concurrency: a run is a subprocess with a budget, so "how many at once" and "what
+  happens when that is full" are the only two questions, and neither needs a scheduler.
+
+**Definition of done**: `teacup serve` starts and `teacup run` is unchanged; a run started
+through the service produces the same `--json` payload and the same #7 record as the same
+run from the CLI; a test asserts a non-loopback bind is refused; a test proves a served run
+never imported the package into the serving process (a fixture package whose `tools.py`
+mutates a module global, asserted absent in the parent); a package that crashes or burns
+its budget leaves the service running; the surface is documented in `docs/execution.md`
+beside the CLI it mirrors; intent §3 gains a row naming that document.
+
+**Not this item**: cross-machine access, multiple users, credential storage, TLS, a queue
+that survives restarts. Also left to a human rather than decided here: whether *"serve
+never runs a package in-process"* should be promoted to an eighth invariant in intent §5.
+The item pins it with a test either way; making it a thing a **fork** must keep is a
+bigger claim, and §5's list was deliberate.
+
+---
+
+### 9. `teacup site` — see what exists and what it did
+
+**Now**: nothing in this repo renders anything. The hub is a directory; after #7 the run
+history is a directory of JSON. Discovery — the *first* verb in the README's flywheel, the
+one every other verb depends on — has no view at all. Lineage exists only as git history.
+Intent §6.6's metric ("how often does someone take another person's agent, improve it, and
+publish the improvement") has no way to be seen even once it can be computed.
+
+**What to change**: `teacup site [--out dist/]` — a generator, not a server. It reads the
+hub directory and the run history and writes a static page.
+
+- **No build step, no npm, no framework**: one HTML file, one JS file, one generated JSON.
+  Intent §4.3 says the format stays readable, hackable and friendly to git; a build chain
+  in a `uv` project is a tax on exactly the person this project wants — the one who forks
+  it. It must open over `file://` with no network and no server.
+- Optionally mounted by #8 at `/` so it reflects runs as they happen, but the generator
+  must not require `serve` to be useful.
+- Content in priority order: which agents exist; what each was derived from
+  (`lineage.derived_from` plus git history); what its benchmark and cost say; what has been
+  run and what that cost.
+- **Escaping is the feature, not a detail.** Every string on that page — `name`,
+  `description`, `AGENT.md`, skill descriptions — was written by whoever published the
+  package. No manifest-derived content ever reaches `innerHTML`. This is item 2's question
+  asked in a second place: item 2 answers *what can a package do to my machine*; this one
+  is *what can a package do to my browser*, and a hub is by design full of strangers' text.
+
+**Definition of done**: one command turns a hub into a page that opens over `file://` with
+no network; a test publishes a package whose `name` and `description` contain a `<script>`
+tag and asserts the output renders it as text; the page shows, for at least one agent, its
+lineage, its recent runs and their costs; no new runtime dependency and no build step;
+intent §3 gains a row and §6 gains a criterion (one command, no network, no build).
 
