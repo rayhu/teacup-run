@@ -8,7 +8,9 @@ What is missing, in the order it should be built. Same shape as teacup-agent's
 (`from_pretrained` / `add_skill` / `run` / `eval` / `push_to_hub`), a hub that is a
 directory and optionally git with no server, budgeted evaluation, goal checks, the
 sandboxed subprocess launcher, and `run_coding_task`. What is missing is mostly the
-seams between those pieces, and the one verb that still requires writing Python.
+seams between those pieces, the one verb that still requires writing Python, and #7: a
+run reports everything it did and then keeps none of it, which is why "is my fork better"
+has no command and why a browsable front end has nothing to read.
 
 The dividing line with teacup-agent, stated once because it is what keeps both repos
 honest: **teacup-agent is one agent you can read and fork; teacup-run is the ecosystem
@@ -233,3 +235,70 @@ where the contract says.
 **Definition of done**: an adapter author can run one command against their own CLI and
 get a pass/fail with reasons; teacup-agent passes it; the contract document carries a
 version number that `run_external` checks or explicitly does not.
+
+---
+
+### 7. A run record: keep what a run already knows
+
+**Now**: a run produces a detailed report and then throws it away. `cli.py`'s `_payload()`
+builds exactly what `docs/execution.md` §7 specifies — agent name and version, the ref,
+the model, the task, the answer, every goal check with its pass/fail and reasons, the
+attempt count, the tool calls, the cost split three ways, token usage including cached,
+the budget and what is left of it, how it stopped, elapsed seconds, exit code — and
+`print`s it to stdout. Nothing writes it anywhere. The native path has no `--run-dir`
+equivalent at all; only `external_cli.run_external` hands the launched agent a directory,
+and `coding_task` points that at a worktree.
+
+So this repo cannot answer either of the two questions its own README implies:
+
+- **"What did I run, and what did it cost?"** — only for the run still on screen.
+- **"Is my fork better than upstream?"** — intent §6.6 says this metric has no command.
+  Item 3 is the machinery for one before/after comparison; without a record, even that
+  comparison evaporates the moment the process exits.
+
+It is also what makes a browsable front end impossible today rather than merely unbuilt: a
+page that shows agents and their runs has nothing to read. The tempting version of that
+page — a live "what is running right now" dashboard — is out of scope for a different
+reason: a run here is a foreground call in the caller's own process, so that set is never
+larger than one, and making it larger means a daemon, a queue and multi-tenancy, which
+intent §7 rules out. Recording runs is the part that is not a control plane.
+
+**What to change**: persist the payload that already exists.
+
+- One JSON file per run under `$TEACUP_HOME/runs/`, named so it sorts by time and does
+  not collide. The document is `docs/execution.md` §7's object plus the fields a record
+  needs and a live report does not: a run id, `started_at` / `finished_at`, and a
+  `status` of `running` → `finished` written at the start and rewritten at the end.
+  That last field is deliberate: it makes "what is running" a filter over files rather
+  than a second architecture, if it is ever wanted.
+- On by default for `teacup run`, off with `--no-record`, and off for `--dry-run`
+  (a wiring check is not a run). The library keeps its current behaviour unless the
+  caller asks for a record; `AutoAgent.run()` must not start writing to a user's home
+  directory as a side effect of an import.
+- **What it must not contain**: no environment values, no credential material, nothing
+  resolved from `environment.required`. The task text and the answer are the user's own
+  data on their own machine and belong in the record — but that is exactly why the
+  directory is `$TEACUP_HOME`, never inside a package, so `push_to_hub` cannot sweep a
+  run history into the hub.
+- A record is written even when the run fails, is stopped by a ceiling, or raises. A
+  history that only keeps the successes is the same lie as an exit code that only
+  reports them, which is intent §5 invariant 7.
+
+**Definition of done**: `teacup run` leaves one file per run whose shape a test asserts
+against the documented key set — the same test style item 6 wants for the backend
+contract, so a field cannot be renamed without something failing here; `--no-record` and
+`--dry-run` leave nothing behind; a run that exits 2, 3 or 4 still leaves a record saying
+so; the record's shape is written down in `docs/execution.md` beside the `--json` object
+it extends, rather than in a comment; intent §3 gains a row for it that names that
+document instead of "none yet"; and `uv run pytest` stays hermetic — the tests must not
+write into a real `$TEACUP_HOME`.
+
+**Not this item, and deliberately after it**: `teacup site` — a static page generated from
+the hub directory and this run history: which agents exist, what each was derived from,
+what their benchmarks and costs say, and what has been run. It should stay a generator
+with no server and no build step (intent §4.3: readable, hackable, friendly to git), and
+it inherits a threat-model question item 2 has not answered yet — it would render
+`name`, `description` and `AGENT.md` written by whoever published the package, so every
+one of those strings is untrusted text on a page. Writing the record first means that
+item is a view, not a rewrite.
+

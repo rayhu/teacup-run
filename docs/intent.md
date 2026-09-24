@@ -189,8 +189,10 @@ proven; the claim about *other people's* frameworks is not, and a third-party ba
 roadmap item 6's conformance suite made concrete.
 
 **6.6 The metric that actually matters** — someone takes an agent, improves it, publishes
-the improvement — has no command yet. Roadmap item 3 is what turns it into one; until
-then it is a goal, not a criterion, and this file should not pretend otherwise.
+the improvement — has no command yet. Roadmap item 3 is what turns it into one and item 7
+is what keeps the answer once it exists (today a run prints its whole report and retains
+none of it); until then it is a goal, not a criterion, and this file should not pretend
+otherwise.
 
 ## 7. Non-goals
 
