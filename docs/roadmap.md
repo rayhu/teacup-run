@@ -267,12 +267,34 @@ intent §7 rules out. Recording runs is the part that is not a control plane.
 
 **What to change**: persist the payload that already exists.
 
-- One JSON file per run under `$TEACUP_HOME/runs/`, named so it sorts by time and does
-  not collide. The document is `docs/execution.md` §7's object plus the fields a record
-  needs and a live report does not: a run id, `started_at` / `finished_at`, and a
-  `status` of `running` → `finished` written at the start and rewritten at the end.
-  That last field is deliberate: it makes "what is running" a filter over files rather
-  than a second architecture, if it is ever wanted.
+- **One append-only file per run** under `$TEACUP_HOME/runs/`, named so it sorts by time
+  and does not collide: JSON lines, one event per line, nothing ever rewritten. The first
+  line is `started` — run id, agent and ref, model, task, `started_at`, pid. The last line
+  is `finished` — `docs/execution.md` §7's object plus `finished_at` and the exit code. In
+  between, one `turn` line per step: step number, tokens, cost so far. That middle stream
+  is what lets #8 show a run while it is still running and #9 tail it, without either of
+  them polling a file that changes under them.
+- **Status is derived, never stored.** The first draft of this item said a mutable
+  `status` field going `running` → `finished`, written at the start and rewritten at the
+  end. That is wrong, and it is worth writing down why rather than quietly fixing: a
+  process that is killed, OOMs, or loses power never reaches the rewrite, so the file says
+  `running` forever and every reader of it — including #9's page — shows a run that died
+  days ago as live. **A field that can only be correct when the program exits cleanly is
+  not a record of whether the program exited cleanly.** The three states come from the file
+  instead:
+  - `finished` — the last line is a terminal event.
+  - `running` — no terminal event, and the writer still holds the file's advisory lock.
+  - `crashed` — no terminal event, and the lock is free.
+
+  The lock is taken for the run's lifetime and released by the kernel on *any* death,
+  SIGKILL included, so liveness needs no heartbeat, no interval to tune and no clock
+  comparison between two machines that do not share one. `flock` is POSIX; where it is not
+  available the fallback is checking the recorded pid, which is weaker — pids are reused —
+  and must be documented as the weaker thing rather than silently substituted.
+- **The `started` line is flushed before the first model call**, not after it. A run that
+  dies inside its first request has already spent money, and a record written at the end
+  would have no trace of it. This is write-ahead logging for the same reason a database
+  writes its log before its pages: the record has to survive the process that writes it.
 - On by default for `teacup run`, off with `--no-record`, and off for `--dry-run`
   (a wiring check is not a run). The library keeps its current behaviour unless the
   caller asks for a record; `AutoAgent.run()` must not start writing to a user's home
@@ -286,14 +308,17 @@ intent §7 rules out. Recording runs is the part that is not a control plane.
   history that only keeps the successes is the same lie as an exit code that only
   reports them, which is intent §5 invariant 7.
 
-**Definition of done**: `teacup run` leaves one file per run whose shape a test asserts
-against the documented key set — the same test style item 6 wants for the backend
+**Definition of done**: `teacup run` leaves one file per run whose event shapes a test
+asserts against the documented key set — the same test style item 6 wants for the backend
 contract, so a field cannot be renamed without something failing here; `--no-record` and
 `--dry-run` leave nothing behind; a run that exits 2, 3 or 4 still leaves a record saying
-so; the record's shape is written down in `docs/execution.md` beside the `--json` object
-it extends, rather than in a comment; intent §3 gains a row for it that names that
-document instead of "none yet"; and `uv run pytest` stays hermetic — the tests must not
-write into a real `$TEACUP_HOME`.
+so; **a run killed with SIGKILL mid-flight leaves a record that reads `crashed`, and a test
+kills one and asserts exactly that** — the defect this item was rewritten to fix is the one
+it must not be possible to reintroduce; status is one named function over a file, not an
+inline check repeated at each call site; the record's shape is written down in
+`docs/execution.md` beside the `--json` object it extends, rather than in a comment; intent
+§3 gains a row for it that names that document instead of "none yet"; and `uv run pytest`
+stays hermetic — the tests must not write into a real `$TEACUP_HOME`.
 
 **Not this item, and deliberately after it**: #8 (`teacup serve`, the long-lived local
 mode that makes records visible while they are being written) and #9 (`teacup site`, the
