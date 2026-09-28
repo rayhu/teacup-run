@@ -81,8 +81,18 @@ linting ceremony this repo has decided not to carry.
   uv run --with 'pytest>=8' python -m pytest -q
   ```
 
-  `uv run pytest` alone fails to spawn — pytest lives in the `dev` extra, not the default
-  environment. A green report from the author is a claim; checking it is part of the job.
+  Use that invocation rather than `uv run pytest`. `pytest` lives in the `dev` extra, which
+  `uv run` does not install on its own — which is why CI runs `uv sync --locked --extra dev`
+  first — so the plain command depends on what the checkout happens to have. In a `.venv`
+  someone has already synced it passes and is fine. In a fresh one it does **not** simply
+  fail to start: uv falls back to whatever `pytest` is on `PATH`, that pytest cannot import
+  the project, and every test errors during collection with `ModuleNotFoundError: No module
+  named 'teacup_run'`, exit 4. Measured in both states on 2026-09-28. **Do not read that as
+  the change under review breaking the imports** — it is the runner, not the diff, and
+  filing it as a finding wastes the author's round. The prescribed invocation brings its own
+  pytest and is right in either state.
+
+  A green report from the author is a claim; checking it is part of the job.
 - If the change touches how an external agent is launched, read the argv that is actually
   built, not the docstring describing it.
 - If the change is behavioural, look for the before-and-after number. "It feels better" is
