@@ -271,7 +271,8 @@ intent §7 rules out. Recording runs is the part that is not a control plane.
 
 - **One append-only file per run** under `$TEACUP_HOME/runs/`, named so it sorts by time
   and does not collide: JSON lines, one event per line, nothing ever rewritten. The first
-  line is `started` — run id, agent and ref, model, task, `started_at`, pid. The last line
+  line is `started` — run id, agent and ref, model, task, `started_at`, and the pid of the
+  process that runs the agent and holds the lock (see below). The last line
   is `finished` — `docs/execution.md` §7's object plus `finished_at` and the exit code. In
   between, one `turn` line per step: step number, tokens, cost so far. That middle stream
   is what lets #8 show a run while it is still running and #9 tail it, without either of
@@ -288,11 +289,41 @@ intent §7 rules out. Recording runs is the part that is not a control plane.
   - `running` — no terminal event, and the writer still holds the file's advisory lock.
   - `crashed` — no terminal event, and the lock is free.
 
-  The lock is taken for the run's lifetime and released by the kernel on *any* death,
-  SIGKILL included, so liveness needs no heartbeat, no interval to tune and no clock
-  comparison between two machines that do not share one. `flock` is POSIX; where it is not
-  available the fallback is checking the recorded pid, which is weaker — pids are reused —
-  and must be documented as the weaker thing rather than silently substituted.
+  **The lock belongs to the process that runs the agent — never to a parent that supervises
+  it.** Under #8 that is the run's own subprocess, not the serving daemon. This is the whole
+  design, and getting it wrong reinstates the defect above in a worse form: if the daemon
+  held the lock, the lock would track *the daemon's* liveness, so a run killed under a
+  daemon that stays up would read `running` forever — exactly the zombie, now invisible to
+  the SIGKILL test below because that test passes on the CLI path. It also settles who may
+  write a terminal event: only the lock holder, which is why #8's shutdown stops its
+  children and lets each write its own rather than writing on their behalf.
+
+  Naming the owner that way is also what makes the lock *readable*. Testing a lock means
+  attempting to take it, so status is an acquire-and-release, not an inspection — and with
+  POSIX record locks (`fcntl(F_SETLK)` — `flock(2)` is the BSD call, only standardised in
+  POSIX Issue 8) **any `close()` of any descriptor on that file drops every lock the calling
+  process holds on it.** A reader inside the writing process would therefore erase the
+  signal it came to read, which is precisely what would happen if `serve` both owned the
+  records and rendered the page. Because the owner is the child, `serve` reads as a separate
+  process, where a failed acquire is just a failed acquire. A reader that does acquire the
+  lock releases it immediately and reports `crashed`.
+
+  Two ordering rules the states depend on. The record is created under its lock before any
+  reader can see it — written to a temporary name, locked, then `rename`d into place — so
+  there is no window in which a live run looks lock-free. And the last line may be
+  truncated: a process killed mid-write leaves a partial JSON line, which is the *expected*
+  shape in the case this record exists to capture. A partial line is not a terminal event,
+  and a reader that raises on it has turned the crash it was built to report into a crash
+  of its own.
+
+  Scope, stated rather than assumed: **liveness here is a single-machine property.** A
+  `$TEACUP_HOME` shared over NFS, or read across a container boundary, is where advisory
+  locks are least trustworthy — wrong in one direction, silently — and #8 is loopback-only
+  precisely because nothing in this path is designed to cross a machine. Where the lock is
+  unavailable at all, a record with no terminal event is `unknown`, not a guess: the
+  `started` line's pid is diagnostic, and status must never depend on it, because the record
+  carries no process start time and therefore nothing that could distinguish a live process
+  from a reused pid.
 - **The `started` line is flushed before the first model call**, not after it. A run that
   dies inside its first request has already spent money, and a record written at the end
   would have no trace of it. This is write-ahead logging for the same reason a database
@@ -315,9 +346,13 @@ asserts against the documented key set — the same test style item 6 wants for 
 contract, so a field cannot be renamed without something failing here; `--no-record` and
 `--dry-run` leave nothing behind; a run that exits 2, 3 or 4 still leaves a record saying
 so; **a run killed with SIGKILL mid-flight leaves a record that reads `crashed`, and a test
-kills one and asserts exactly that** — the defect this item was rewritten to fix is the one
-it must not be possible to reintroduce; status is one named function over a file, not an
-inline check repeated at each call site; the record's shape is written down in
+kills one and asserts exactly that — on every path that can start a run, the served one
+included once #8 exists**, because the same assertion passes on the CLI path while being
+false under a supervisor that outlives the run, and that gap is the defect this item was
+rewritten to fix; a record whose last line is a truncated write still reads `crashed`
+rather than raising; status is one named function over a file, not an inline check repeated
+at each call site, and it returns `unknown` rather than guessing where the lock is
+unavailable; the record's shape is written down in
 `docs/execution.md` beside the `--json` object it extends, rather than in a comment; intent
 §3 gains a row for it that names that document instead of "none yet"; and `uv run pytest`
 stays hermetic — the tests must not write into a real `$TEACUP_HOME`.
