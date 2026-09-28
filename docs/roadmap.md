@@ -500,13 +500,30 @@ adds `--coding-tools --approve hooks` to the argv of the *launched* teacup-agent
 implemented here.
 
 That is survivable today for the same reason #8's in-process finding is survivable today:
-a run is a foreground call the user typed themselves. It stops being survivable the moment
-#8 exists, and it fails in a way that is easy to miss. teacup-agent's default policy is
-`auto`: ask when `sys.stdin.isatty()`, deny when it does not (`cli.py:_make_approver`).
-**`serve` has no stdin to ask on** — `sandbox.py` severs the child's stdin deliberately,
-and the serving process itself is a daemon. A served run therefore inherits `auto` and
-silently degrades to denying everything side-effecting. Safe, and useless: the front end
-#8 and #9 are for would be a window you can watch and cannot answer.
+a run is a foreground call the user typed themselves. #8 breaks it in two directions at
+once, and an earlier draft of this item got the more dangerous one backwards, so both are
+written out here.
+
+**The direction that is merely useless.** For native tools there is no gate to configure,
+and for an external run that reaches teacup-agent's own `auto` policy — ask when
+`sys.stdin.isatty()`, deny when it does not (`cli.py:_make_approver`) — there is nothing to
+ask on: `sandbox.py` severs the child's stdin deliberately and the serving process is a
+daemon. Those calls are denied. Safe; also a front end you can watch and cannot answer.
+
+**The direction that is not.** The one side-effecting path this repo actually has does not
+reach `auto` at all. `coding_task.py:149` hardcodes `--coding-tools --approve hooks`, and
+`--hooks` is deliberately *not* passed (`coding_task.py:13-24`) so that teacup-agent
+auto-discovers `./hooks.py` relative to its cwd — which is the worktree. **A `hooks.py`
+committed in the target repository is therefore checked out and becomes the approver**, and
+teacup-agent's own module docstring calls `approve_tool_call` the one hook that can say
+*yes* on nobody's behalf. Today that is a documented trade-off, contained by the fact that a
+human typed the command against a repo they chose. Under `serve` it is a daemon running a
+stranger's approval policy with no human, no TTY and no client attached — and teacup-run
+cannot even select the child's policy, because that flag is a constant in the argv.
+
+So the gate this item builds is not only a gate for this repo's own tools. It is also the
+ability to *choose the child's*, and a served run must not default to letting the target
+repo choose it.
 
 The word that hides all of this is **manage**. A page that only *shows* runs is read-only
 and needs none of this. A page with buttons — approve this call, start that run, stop that
@@ -516,18 +533,28 @@ things.
 **What to change**: give this repo a gate, and make "who is watching" an answer the program
 states rather than a property of a file descriptor.
 
-- **One policy vocabulary across both repos, not two.** teacup-agent already has
-  `--approve {auto,deny,allow,hooks}`, where `auto` is ask-if-TTY-else-deny and `hooks`
-  defers to the operated project's own `approve_tool_call`. This repo takes the same four
-  names with the same meanings — item 4 is "one package format, two implementations, no
-  drift", and a user who learned `--approve deny` in one place must not find it spelled
-  differently in the other. What `serve` adds is another answer to *where the asking
-  happens*, not a fifth trust level.
-- **`auto` stops meaning `isatty()` and starts meaning "is there a channel to ask on".**
-  A TTY is one such channel; an attached `serve` client is another. No channel — no
-  terminal, no client — is still a denial. This is teacup-agent's rule ("deny by default
-  when nobody is watching") with the definition of *watching* widened by exactly one case
-  and no more.
+- **The four shared names keep their meanings exactly. `serve` gets a fifth.** teacup-agent
+  has `--approve {auto,deny,allow,hooks}`, where `auto` is ask-if-TTY-else-deny and `hooks`
+  defers to the operated project's own `approve_tool_call`. This repo takes those four
+  unchanged, and adds `client`: ask an attached `serve` client, and deny when none is
+  attached.
+
+  An earlier draft did the tempting thing instead — kept four names and redefined `auto`
+  from "is there a TTY" to "is there a channel to ask on". That is drift wearing the same
+  name, and item 4 forbids it: after such a change the same flag, spelled the same way, in
+  the same state (no TTY, a client attached) answers differently in the two repos, and a
+  user who learned `--approve auto` in one place has learned something false about the
+  other. Widening the meaning of an existing default is also a change to teacup-agent's
+  behaviour that this repo does not get to make on its own. A genuinely new situation — an
+  HTTP client is not a terminal — deserves a new name, not a quiet reinterpretation of an
+  old one. `auto` therefore still means what it means next door: no TTY, no approval.
+- **The child's policy becomes selectable, and a served run does not default to `hooks`.**
+  `--approve` is forwarded to the launched CLI instead of being the constant at
+  `coding_task.py:149`, so the caller decides whether the target repository's own
+  `hooks.py` may approve on their behalf. Keeping `hooks` as the default for a run a human
+  typed is defensible and is today's documented behaviour; keeping it as the default for a
+  run started by a daemon is the hole described above. Whatever this repo cannot configure
+  in the child, it must at least refuse to launch unattended.
 - **An unanswered request is a denial, and it expires.** A terminal prompt blocks until a
   human types; over HTTP the human closes the tab. The request carries a deadline, the
   deadline resolves to `denied`, and the run continues as refused rather than leaving a
@@ -557,8 +584,16 @@ approving `write_file("~/.bashrc", ...)`. It costs a model call on a path the us
 ask to spend money on, so it is off by default and lands in the cost split #7 records. It is
 generated from the call and the spec, for the same reason the decision is.
 
-**Definition of done**: `teacup run` takes `--approve {auto,deny,allow,hooks}` and a test
-runs the same policy table against both repos, so the two cannot drift apart silently; a
+**Definition of done**: `teacup run` takes `--approve {auto,deny,allow,hooks,client}`; the
+meaning of each of the four shared values is written once as a table in `docs/execution.md`,
+and this repo's test asserts its own implementation against that table — *not* against the
+sibling checkout, because teacup-agent is not a dependency of this repo (`pyproject.toml`
+is `pyyaml` and `mcp`) and intent §4.5 requires everything checkable to stay hermetic and
+free, so a test that imports the other repo cannot be written and a second hand-maintained
+copy of the table is the drift it would be there to prevent; cross-implementation agreement
+is item 6's conformance suite, and this item's job is to give it something unambiguous to
+conform to. Then: `--approve` reaches the launched CLI rather than being hardcoded, and a
+test asserts the argv actually built rather than the docstring describing it; a
 side-effecting tool is denied when there is no channel to ask on, asserted under
 `sandbox.py`'s real severed-stdin conditions rather than a mocked `isatty`; an approval whose
 deadline passes resolves to `denied` and the run continues and says so; a test fails if the
