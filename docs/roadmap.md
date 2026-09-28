@@ -384,12 +384,25 @@ loopback, running with the credentials that user already has in their own shell,
 trust boundary — it is the CLI with a longer life. It is also the missing half of #7 (a
 record you can watch being written, not only read afterwards) and the thing #9 talks to.
 
+**Build #10 first.** The file's contract is "in the order it should be built", and these
+two are out of order as numbered. The dependency is on correctness, not polish: this entry
+already describes a disconnected client leaving its run to a denial (below), which is
+behaviour that does not exist until the gate does, and building in listed order would ship a
+long-lived process that starts runs of stranger-authored code — with the target repo's own
+`hooks.py` still hardcoded as the approver on the coding path — while this repo has no gate
+at all. Read #10 as this item's prerequisite wherever the numbering suggests otherwise.
+
 **What to change**: `teacup serve`, in the same console script.
 
 - **Loopback only.** Bind `127.0.0.1` and refuse any other bind rather than offering a flag
-  that quietly exposes it. Intent §4 and AGENTS-style naming: a flag must not lie about
-  what it does, and "prefer explicit over convenient" applies hardest to the one setting
-  that changes who can reach a code-execution endpoint.
+  that quietly exposes it. The basis is intent §7, which rules out the cross-machine
+  product, and §4.1, which says this repo runs code it did not write: the one setting that
+  decides who can reach a code-execution endpoint is the last place to offer a convenience
+  flag whose name understates it. (Earlier drafts cited §4 for "a flag must not lie about
+  what it does" and "prefer explicit over convenient". Those are teacup-agent's `AGENTS.md`
+  rules; this repo has committed no such rule, and §4's seven bullets are about trust,
+  formats, tooling and licence, not naming. If this repo wants that rule it has to adopt
+  it, not cite it.)
 - **No auth, no users, no TLS — deliberately.** On loopback there is nobody to
   authenticate. Adding them would mean the cross-machine product intent §7 rules out, and
   the day a non-loopback bind is actually wanted, item 2's threat model is the
@@ -397,15 +410,31 @@ record you can watch being written, not only read afterwards) and the thing #9 t
 - **Surface = the contract that already exists.** `docs/execution.md` §7's object over HTTP
   instead of stdout: list the hub, start a run, read a run record (#7), stream progress.
   Nothing new to design; a consumer that can read `--json` can read this.
-- **The hard rule: `serve` never executes a package in its own process.** Every run it
-  starts goes through `sandbox.py`'s subprocess path; `exec_module` is never reached from
-  the serving process. Three reasons, each already paid for elsewhere in this repo: a
-  package that crashes must not take the service with it; the timeout and resource limits
-  only exist on the subprocess path; and a stranger's code must never share an address
-  space and an environment with a process that outlives the run. Item 2's three
+- **The hard rule: `serve` never executes a package in its own process.** `exec_module` is
+  never reached from the serving process. Three reasons, each already paid for elsewhere in
+  this repo: a package that crashes must not take the service with it; the timeout and
+  resource limits only exist on the subprocess path; and a stranger's code must never share
+  an address space and an environment with a process that outlives the run. Item 2's three
   escalations (`entrypoint:` is executed, `environment.required` is the child's env
   allowlist, `teacup_agent.project_root` escapes) are survivable at "I typed this once" and
   are not survivable in something that stays up.
+- **Obeying that rule is new work, not reuse — and this is the item's real cost.** An
+  earlier draft said every run "goes through `sandbox.py`'s subprocess path", as though the
+  discipline already existed for every package. It does not. `auto.py:174` routes to
+  `external_cli.run_external` only when `spec.framework != "teacup"`, and `manifest.py:82-84`
+  says `entrypoint` is unused for the native framework — **a native package has no command
+  to launch, so there is nothing for `sandbox.run_sandboxed` to run.** `serve` therefore
+  needs a native runner: re-invoking this repo's own `teacup run --json` as a subprocess
+  under the same `cwd`, severed `stdin`, allowlist and rlimits. Cheap to build, and
+  dishonest to leave unnamed, because "reuse the path we already have" is what made the rule
+  sound free.
+- **Unanswered, and it belongs to item 2: how a credential reaches that child.**
+  `sandbox._child_env` gives a subprocess a minimal base plus an env allowlist, and today
+  that allowlist is fed by the package-declared `environment.required` — which is one of
+  item 2's escalations. A native run needs a model API key in the child. Letting a
+  stranger's manifest name what else travels with it is exactly the thing this rule exists
+  to stop, so the answer cannot be "widen the allowlist" and this item must not pretend it
+  has one.
 - Bounded concurrency: a run is a subprocess with a budget, so "how many at once" and "what
   happens when that is full" are the only two questions, and neither needs a scheduler.
 - **A request's blocking budget is bounded; runs outlive requests.** Starting a run answers
@@ -423,17 +452,25 @@ record you can watch being written, not only read afterwards) and the thing #9 t
   meanings instead of only zero and nonzero. A long-lived process makes this sharper than a
   CLI does: a command that prints nothing has still visibly returned, and a daemon that does
   nothing looks exactly like a daemon that is working.
-- **Shutdown is not a kill.** Stopping the service reaps its children rather than orphaning
-  them, and tries to write a terminal event for every run still in flight. When it cannot —
-  it was killed itself — #7 already covers the case: no terminal event with the lock free
-  reads as `crashed`, which is true and is what the page should say.
+- **Shutdown is not a kill, and the daemon never writes into a record it does not own.**
+  Stopping the service signals its children and gives them the chance to write their own
+  terminal events, rather than orphaning them or writing on their behalf. That second half
+  is not politeness: #7 puts the record's lock in the process that runs the agent precisely
+  so the lock tracks *that* process, and a daemon that wrote terminal events for its
+  children would be claiming an ownership it does not have — and would leave a run killed
+  under a surviving daemon reading `running` forever, which is the zombie #7 was rewritten
+  to remove. A child that dies without writing leaves no terminal event and a free lock,
+  which #7 already reads as `crashed`. That is true, and it is what the page should say.
 
 **Definition of done**: `teacup serve` starts and `teacup run` is unchanged; a run started
 through the service produces the same `--json` payload and the same #7 record as the same
 run from the CLI; a test asserts a non-loopback bind is refused; a test proves a served run
 never imported the package into the serving process (a fixture package whose `tools.py`
-mutates a module global, asserted absent in the parent); a package that crashes or burns
-its budget leaves the service running; starting a run answers within the documented bound
+mutates a module global, asserted absent in the parent **and paired with an assertion that
+the run actually executed**, since the absence passes trivially when nothing ran); a package that crashes or burns
+its budget leaves the service running; a **native** package runs served, which is what
+proves the native runner exists rather than being assumed; starting a run answers within the
+documented bound
 while the run is demonstrably still going, and a test disconnects the client and asserts the
 run survives it; a refused start leaves a record naming the reason; stopping the service
 leaves no orphaned subprocess and no run record that reads `running`; the surface is
@@ -484,7 +521,6 @@ no network; a test publishes a package whose `name` and `description` contain a 
 tag and asserts the output renders it as text; the page shows, for at least one agent, its
 lineage, its recent runs and their costs; no new runtime dependency and no build step;
 intent §3 gains a row and §6 gains a criterion (one command, no network, no build).
-
 
 ---
 
