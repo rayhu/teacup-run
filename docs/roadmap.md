@@ -373,17 +373,45 @@ record you can watch being written, not only read afterwards) and the thing #9 t
   are not survivable in something that stays up.
 - Bounded concurrency: a run is a subprocess with a budget, so "how many at once" and "what
   happens when that is full" are the only two questions, and neither needs a scheduler.
+- **A request's blocking budget is bounded; runs outlive requests.** Starting a run answers
+  with a run id inside a short fixed bound — a ceiling, not a target — and the run continues
+  in its subprocess; progress is read from #7's event stream, not from a held connection. An
+  agent run takes minutes and an HTTP client does not wait minutes, so the alternative is a
+  surface that appears to hang. The socket does not own the run either: a client that
+  disconnects leaves the run going, and stopping one is an explicit call. What the
+  disconnect *does* take with it is the approval channel — per #10 that run is now nobody's,
+  so `auto` denies, which is the correct and boring outcome.
+- **Refusal is a recorded event, never silence.** Concurrency full, gate denied, budget
+  exhausted before the first call, package not found: each leaves a record saying which. "The
+  service decided not to do that" must be distinguishable from "the service is broken" from
+  the outside, without reading a log — the same reason `docs/execution.md` gives exit codes
+  meanings instead of only zero and nonzero. A long-lived process makes this sharper than a
+  CLI does: a command that prints nothing has still visibly returned, and a daemon that does
+  nothing looks exactly like a daemon that is working.
+- **Shutdown is not a kill.** Stopping the service reaps its children rather than orphaning
+  them, and tries to write a terminal event for every run still in flight. When it cannot —
+  it was killed itself — #7 already covers the case: no terminal event with the lock free
+  reads as `crashed`, which is true and is what the page should say.
 
 **Definition of done**: `teacup serve` starts and `teacup run` is unchanged; a run started
 through the service produces the same `--json` payload and the same #7 record as the same
 run from the CLI; a test asserts a non-loopback bind is refused; a test proves a served run
 never imported the package into the serving process (a fixture package whose `tools.py`
 mutates a module global, asserted absent in the parent); a package that crashes or burns
-its budget leaves the service running; the surface is documented in `docs/execution.md`
-beside the CLI it mirrors; intent §3 gains a row naming that document.
+its budget leaves the service running; starting a run answers within the documented bound
+while the run is demonstrably still going, and a test disconnects the client and asserts the
+run survives it; a refused start leaves a record naming the reason; stopping the service
+leaves no orphaned subprocess and no run record that reads `running`; the surface is
+documented in `docs/execution.md` beside the CLI it mirrors; intent §3 gains a row naming
+that document.
 
 **Not this item**: cross-machine access, multiple users, credential storage, TLS, a queue
-that survives restarts. Also left to a human rather than decided here: whether *"serve
+that survives restarts. Also not this item, and the tempting one: **a schedule.** A daemon
+that wakes on a timer and starts runs nobody asked for is a different product, not a longer
+CLI — it acts when no human is present, which is precisely the case #10's `auto` denies, and
+it is what would actually turn `serve` into the thing intent §7 rules out. `serve` stays
+reactive: it runs what it is asked to run, and its only unprompted behaviour is reaping its
+own children. Also left to a human rather than decided here: whether *"serve
 never runs a package in-process"* should be promoted to an eighth invariant in intent §5.
 The item pins it with a test either way; making it a thing a **fork** must keep is a
 bigger claim, and §5's list was deliberate.
