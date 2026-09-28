@@ -13,6 +13,8 @@ run reports everything it did and then keeps none of it, which is why "is my for
 has no command and why a browsable front end has nothing to read. #7 → #8 → #9 are that
 one path: keep the record, give it a long-lived local process, then render it — none of
 which crosses a machine boundary, which is what keeps them out of intent §7's non-goals.
+#10 is the one that path cannot skip: that page may *show* runs with no gate at all, but it
+may not grow a button until this repo has one, because today it has none for any tool.
 
 The dividing line with teacup-agent, stated once because it is what keeps both repos
 honest: **teacup-agent is one agent you can read and fork; teacup-run is the ecosystem
@@ -420,3 +422,88 @@ tag and asserts the output renders it as text; the page shows, for at least one 
 lineage, its recent runs and their costs; no new runtime dependency and no build step;
 intent §3 gains a row and §6 gains a criterion (one command, no network, no build).
 
+
+---
+
+### 10. An approval gate, and what "ask a human" means with no terminal
+
+**Now**: there is none. This repo's native loop has no gated/ungated distinction on any
+tool at all — `auto.py:118` and `mcp_tools.py:30` both say so in prose, as a stated
+limitation rather than an oversight: a locally authored `@tool` function, and every tool an
+MCP server contributes, already runs unattended with no human in the loop. The only
+approval anywhere in a `teacup` run belongs to somebody else's process: `coding_task.py`
+adds `--coding-tools --approve hooks` to the argv of the *launched* teacup-agent CLI
+(`coding_task.py:149`), so the gate that runs is the child's — configured from here, not
+implemented here.
+
+That is survivable today for the same reason #8's in-process finding is survivable today:
+a run is a foreground call the user typed themselves. It stops being survivable the moment
+#8 exists, and it fails in a way that is easy to miss. teacup-agent's default policy is
+`auto`: ask when `sys.stdin.isatty()`, deny when it does not (`cli.py:_make_approver`).
+**`serve` has no stdin to ask on** — `sandbox.py` severs the child's stdin deliberately,
+and the serving process itself is a daemon. A served run therefore inherits `auto` and
+silently degrades to denying everything side-effecting. Safe, and useless: the front end
+#8 and #9 are for would be a window you can watch and cannot answer.
+
+The word that hides all of this is **manage**. A page that only *shows* runs is read-only
+and needs none of this. A page with buttons — approve this call, start that run, stop that
+one — is an approval surface, and approval surfaces are where agents get talked into
+things.
+
+**What to change**: give this repo a gate, and make "who is watching" an answer the program
+states rather than a property of a file descriptor.
+
+- **One policy vocabulary across both repos, not two.** teacup-agent already has
+  `--approve {auto,deny,allow,hooks}`, where `auto` is ask-if-TTY-else-deny and `hooks`
+  defers to the operated project's own `approve_tool_call`. This repo takes the same four
+  names with the same meanings — item 4 is "one package format, two implementations, no
+  drift", and a user who learned `--approve deny` in one place must not find it spelled
+  differently in the other. What `serve` adds is another answer to *where the asking
+  happens*, not a fifth trust level.
+- **`auto` stops meaning `isatty()` and starts meaning "is there a channel to ask on".**
+  A TTY is one such channel; an attached `serve` client is another. No channel — no
+  terminal, no client — is still a denial. This is teacup-agent's rule ("deny by default
+  when nobody is watching") with the definition of *watching* widened by exactly one case
+  and no more.
+- **An unanswered request is a denial, and it expires.** A terminal prompt blocks until a
+  human types; over HTTP the human closes the tab. The request carries a deadline, the
+  deadline resolves to `denied`, and the run continues as refused rather than leaving a
+  subprocess parked forever. A pending approval that outlives the person who could answer
+  it is a held door.
+- **The decision never sees the agent's reasoning.** teacup-agent's approver already has
+  the right shape: `approve(call, spec)` receives the tool call and the tool's own spec —
+  not the transcript, not the model's argument for why the call is fine. Today that is true
+  by accident of a signature; this item makes it a rule, because the failure it prevents is
+  specific and one-way. **A model that can put text in front of its own approval check will
+  eventually write text that approves it.** Whatever `serve` renders next to the button is
+  built from those same two inputs.
+- **Anything remembered is written where the user can read it.** "Approve calls like this
+  from now on" is simultaneously the most useful button and the easiest way to leave someone
+  holding a permission they cannot find or revoke. If it exists at all it is a line in a
+  file under `$TEACUP_HOME`, append-only in the same style as #7's record — never in-memory
+  state that dies with the daemon, and never inside a package, so `push_to_hub` cannot
+  publish somebody's standing consent.
+- **Approval is an event in the run's record.** #7's file already grows a line per turn;
+  `requested` / `granted` / `denied` / `expired` are lines too, with which channel answered
+  and how long it took. A run whose record does not say a call was approved is a run where
+  it was not.
+
+*Optional, and only if it pays for itself*: a one-sentence explanation of what the call will
+actually do, shown beside the button — the difference between approving `write_file` and
+approving `write_file("~/.bashrc", ...)`. It costs a model call on a path the user did not
+ask to spend money on, so it is off by default and lands in the cost split #7 records. It is
+generated from the call and the spec, for the same reason the decision is.
+
+**Definition of done**: `teacup run` takes `--approve {auto,deny,allow,hooks}` and a test
+runs the same policy table against both repos, so the two cannot drift apart silently; a
+side-effecting tool is denied when there is no channel to ask on, asserted under
+`sandbox.py`'s real severed-stdin conditions rather than a mocked `isatty`; an approval whose
+deadline passes resolves to `denied` and the run continues and says so; a test fails if the
+transcript, the model's reasoning, or any other model-authored text is passed to the
+approver, which takes the call and the spec and nothing else; every approval outcome appears
+in #7's record; standing consent, if built, is a readable file the user can delete; and the
+rules here are written into item 2's threat model when that document exists rather than
+living only in this entry.
+
+**Not this item**: which tools count as side-effecting in the first place. This item builds
+the gate and decides who may open it; item 2 decides what has to go through it.
