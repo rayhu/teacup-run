@@ -137,12 +137,43 @@ Manifest-declared paths *inside* the schema — `instructions:`, `read()`, `AGEN
 are contained as of the CLI change (`AgentSpec._inside`), because there was no design
 question there: nothing legitimately points outside. These three have one.
 
+**The isolation ladder, and which rung buys what.** "Sandbox-by-default" is one of the
+answers the definition of done accepts, so the document has to say *which* sandbox and be
+honest about the bill. Three rungs, each a real option:
+
+| Rung | What it adds | What it costs |
+| --- | --- | --- |
+| **1. Today** — `sandbox.py`: explicit `cwd`, severed `stdin`, env allowlist, rlimits | Mistakes and runaway resources stop being fatal | Nothing. It is already here |
+| **2. `bubblewrap`** (Linux) / `sandbox-exec` (macOS) | A mount namespace, so the child's *filesystem view* is the sandbox rather than a starting directory; a PID namespace, so it cannot see — and therefore cannot `ptrace` — the parent; `--unshare-net` for no network at all; `--die-with-parent` | One binary and a flag list. No image, no build step, millisecond startup. Needs unprivileged user namespaces (off by default on some distros); `sandbox-exec` is undocumented and Apple calls it deprecated |
+| **3. A microVM** (Firecracker, Cloud Hypervisor) | A separate kernel, so even a kernel-level escape stays inside | You supply a kernel image and a root filesystem; virtio devices only; networking is a tap device needing `CAP_NET_ADMIN`; no filesystem passthrough without a second daemon. **And a rootfs is a build artifact, which intent §4.3 rules out of the package format** |
+
+Two things follow, and they are why this belongs in the threat model rather than in #8:
+
+- **Only the third escalation above is bought by climbing.** `project_root` escaping via
+  `../..` is contained outright by rung 2: the path is simply not in the child's
+  filesystem view, so there is nothing to validate. But **`environment.required` is not
+  an isolation problem at all** — a microVM holding `AWS_SECRET_ACCESS_KEY` is a microVM
+  holding `AWS_SECRET_ACCESS_KEY`, and teacup-agent's own threat model already says the
+  shape of this ("a container holding `OPENAI_API_KEY` with open egress is a perfectly
+  good exfiltration channel"). Nor is `entrypoint:` being executed: every rung runs it,
+  they differ only in what it can reach. **Two of the three are policy decisions that no
+  amount of isolation makes for you**, which is the finding that should survive this entry
+  even if the rung choice changes.
+- **A rung that exists on one platform must not read as isolation on the other.** Rung 2
+  is two different mechanisms with different guarantees, and rung 3 is Linux-only
+  (Firecracker speaks to KVM directly; there is no macOS backend, and on Apple silicon a
+  Linux guest with nested virtualisation needs M3 or later plus macOS 15). Whatever is
+  chosen, the unsupported platform gets a *stated* downgrade, not a silent no-op: naming a
+  function `run_sandboxed` on a host where it sandboxes nothing is the same lie as a
+  failed search that reads "this does not exist".
+
 **Definition of done**: the document names, for each of the four verbs, what an attacker
 who controls a published package can reach; every default it recommends is either already
 the code's behaviour or has an issue linking to it; the three escalations above each have
 a stated answer (allowlist, prompt-on-first-run, sandbox-by-default, or "accepted, and
-here is why"); and item 1's CLI does not ship a `run` that is easier to point at a
-stranger than the library is.
+here is why"); **any answer of "sandbox-by-default" names the rung from the table above
+and says what that rung does on the platform it does not exist on**; and item 1's CLI does
+not ship a `run` that is easier to point at a stranger than the library is.
 
 ---
 
